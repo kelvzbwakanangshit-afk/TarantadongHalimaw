@@ -2,459 +2,1085 @@ const fs = require("fs");
 const path = require("path");
 
 /*
- * HALIMAW — single-file integrated version
- * Commands: "." ON | ".." OFF | "..." STATUS
- * Normal messages: optional haha reaction + randomized roast reply.
- *
- * All helper systems are kept in this file so no extra module imports are needed.
+ * HALIMAW — dot-trigger version (single file)
+ *   .    = ON  (react 🥷)
+ *   ..   = OFF
+ *   ...  = STATUS
+ * Kapag ON: random roast reply na may typing indicator, delay,
+ * dynamic cooldown at random chance. PM at GC.
  */
 
 module.exports.config = {
   name: "halimaw",
-  version: "9.0.0-INTEGRATED",
+  version: "10.0.0",
   hasPermission: 0,
   credits: "sinzu / updated",
-  description: "Halimaw — reaction commands + randomized banat reply",
+  description: "Halimaw — dot commands + ninja auto-roast (PM & GC)",
   usePrefix: false,
   commandCategory: "Fun",
   usages: ". = ON | .. = OFF | ... = STATUS",
-  cooldowns: 5
+  cooldowns: 0
 };
 
-/* ------------------------------------------------------------------ */
-/* Settings                                                            */
-/* ------------------------------------------------------------------ */
+/* ---------------- Settings ---------------- */
 
 const DATA_PATH = path.join(__dirname, "halimaw_config.json");
 const NINJA_REACT = "🥷";
-const HAHA_REACT = "haha";
-const HAHA_EMOJI = "😆";
+const GC_ONLY = true;               // true = group chat lang, hindi gagana sa PM
+const REACT_ON_EVERY_REPLY = false; // true = mag-🥷 din sa message na sinasagot niya
 
-const BANAT_REPLY_DELAY_MS = 5000;
-const BANAT_MAX_HUMAN_DELAY_MS = 12000;
-const REPLY_CHANCE = 0.72;
-const REPLY_COOLDOWN_MS = 8000;
-const MAX_RECENT = 36;
-const TTL_MS = 20 * 60 * 1000;
-const MAX_BAGS = 200;
-const SHORTHAND_CHANCE = 0.35;
-
-// Walang laman = sasagot sa lahat ng normal na message (ayon sa REPLY_CHANCE).
-// Lagyan ng salita, hal. ["halimaw", "banat"], kung gusto mong trigger words lang.
-const TRIGGER_WORDS = [];
-
-// I-set sa true para makita sa console kung bakit hindi sumasagot.
+const REPLY_CHANCE = 0.70;                         // 70% chance sumagot
+const COOLDOWN_MIN_MS = 10000;                     // dynamic cooldown 10–15s
+const COOLDOWN_MAX_MS = 15000;
+const TYPING_MIN_MS = 2000;                        // typing delay 2–4s
+const TYPING_MAX_MS = 4000;
 const DEBUG = true;
+
 function dbg(...args) {
   if (DEBUG) console.log("[HALIMAW]", ...args);
 }
 
-const SPEED_PRESETS = Object.freeze({
-  fast:   { min: 350, max: 1100, typingPerChar: 7 },
-  normal: { min: 800, max: 2600, typingPerChar: 15 },
-  slow:   { min: 1400, max: 4200, typingPerChar: 23 }
-});
+/* ---------------- Roasts ---------------- */
 
-const BANAT_SHORTHANDS = Object.freeze({
-  core: [
-    ["you are", "u r"], ["your", "ur"], ["you're", "ur"],
-    ["because", "cuz"], ["though", "tho"], ["really", "rlly"],
-    ["people", "ppl"], ["please", "pls"], ["message", "msg"]
-  ],
-  casual: [
-    ["okay", "ok"], ["right now", "rn"], ["by the way", "btw"],
-    ["I don't know", "idk"], ["in my opinion", "imo"],
-    ["to be honest", "tbh"], ["as soon as possible", "asap"]
-  ],
-  reaction: [
-    ["what the heck", "wtf"], ["oh my god", "omg"],
-    ["laughing out loud", "lol"], ["I can't even", "cant even"]
-  ],
-  slang: [
-    ["no problem", "np"], ["got to go", "gtg"], ["talk to you later", "ttyl"]
-  ]
-});
-
-/* ------------------------------------------------------------------ */
-/* Roasts                                                              */
-/* ------------------------------------------------------------------ */
-
-const RAW_ROASTS = [
-  "Puro ka yabang, tapos inuulit mo lang din ang nauna mong sinabi. 🤷‍♂️",
-  "Nagpalit ka na naman ng topic, pero hindi naman sukatan ng talino ang dami ng salita. 🤖",
-  "「Ang dami mong sinasabi sa comments, pero mas maingay ka kaysa malinaw. 📱🤡」",
-  "『Ang hilig mong sumingit, pero hindi naman nagiging tama dahil paulit-ulit. 🫠』",
-  "Ang bilis mong magbintang, at hindi lahat ng tahimik ay interesado sa sinasabi mo. 🎭",
-  "Puro ka opinion, tapos wala namang bagong sinabi. 💸🧠",
-  "Nagagalit ka na naman, tapos ikaw rin ang unang napikon. 🧠📉",
-  "『Ang galing mong umiwas sa tanong, pero wala pa ring direksyon ang argumento mo. 🧠📉』",
-  "Ang sipag mong magpalit ng profile, pero ikaw rin ang nalilito sa sarili mong sinabi. ⚡🗿",
-  "Ang ingay mo sa comments, pero hindi sapat ang confidence kung mali ang punto. 🤐",
-  "「Ang hilig mong gumawa ng issue, at wala namang nagbago kahit humaba ang chat mo. 💸🧠」",
-  "Nagsalita ka na naman, tapos ikaw pa ang galit kapag sinagot. 🎭",
-  "Ang lakas mong magmarunong, tapos ikaw rin ang unang napikon. 💬🙄",
-  "Kailangan mo talagang may huling salita, pero hindi lahat ng iniisip mo kailangang i-post. 🤡💬",
-  "「Puro ka yabang, pero hindi ibig sabihin no’n may alam ka na. 📱🤡」",
-  "『Nagagalit ka na naman, tapos kapag tinanong, wala nang kasunod. 💬🙄』",
-  "Pati bot hindi mo makausap nang maayos, pero parang ayaw mong intindihin ang sagot. 🎭",
-  "Puro ka mema, at hindi lahat ng tahimik ay interesado sa sinasabi mo. 🤷‍♂️",
-  "「Puro ka dahilan, at hindi lahat ng tahimik ay interesado sa sinasabi mo. 😴💬」",
-  "『Nagpalit ka na naman ng topic, pero wala kang naipakitang patunay. 🗿』",
-  "Puro ka puna sa iba, at hindi nadadagdagan ang sense sa dami ng emoji. 💀",
-  "Puro ka yabang, pero wala pa ring direksyon ang argumento mo. 🤖",
-  "Puro ka yabang, at wala namang nadagdag sa usapan. 🤡💬",
-  "『Puro ka opinion, at hindi lahat ng usapan kailangan mong salihan. 🎭』",
-  "Ang tapang mo kapag walang nakakakilala, pero wala pa ring direksyon ang argumento mo. 📶😴",
-  "Nagpalit ka lang ng pangalan, pero mukhang mas mahalaga sa’yo ang pansin kaysa punto. 🤷‍♂️",
-  "Puro ka pa-cool, tapos wala ka namang masagot. 🎭",
-  "『Gumawa ka pa talaga ng bagong account, tapos wala ka namang masagot. 🤖』",
-  "Puro ka parinig pero walang diretsong sagot, parang hindi mo muna pinag-isipan bago sinend. 🗿",
-  "Ang sipag mong magpalit ng profile, at hindi lahat ng usapan kailangan mong salihan. 📱🤡",
-  "「Puro ka dahilan, tapos parang ikaw lang ang may ganang ipagpatuloy ’to. 📱🤡」",
-  "『Ang dami mong effort sa gulo, tapos kapag tinanong, wala nang kasunod. 🧠📉』",
-  "Ang lakas mong magmarunong, at ang layo pa rin ng sagot mo sa tanong. 💬🙄",
-  "Ang galing mong umiwas sa tanong, tapos nagtataka kang hindi ka sineseryoso. 📶😴",
-  "「Ang hilig mong gumawa ng issue, parang gusto mo lang talagang mapansin. 🧠📉」",
-  "『Ang hilig mong sumingit, pero hindi mo kailangang gawing tungkol sa’yo lahat. 💬🙄』",
-  "Ang hilig mong sumingit, pero mas maingay ka kaysa malinaw. 💬🙄",
-  "Nagagalit ka na naman, pero ikaw rin ang nalilito sa sarili mong sinabi. 💬🙄",
-  "「Nagpaliwanag ka pa nang ganyan, at wala namang nagbago kahit humaba ang chat mo. 🫠」",
-
-  // More banat replies
-  "Ang haba ng message mo, pero parang intro pa lang hanggang dulo. 😭",
-  "Puro ka typing, kulang naman sa point. 💬",
-  "Hindi lahat ng may last word, may best argument. 🗿",
-  "Ang confident mo, parang may source ka kahit wala. 🤡",
-  "Nag-type ka ng essay para sabihin ang wala. 📉",
-  "Ang dami mong energy sa debate, sana may direction din. 😭",
-  "Puro ka comeback, pero recycled naman. ♻️",
-  "Hindi porket caps lock, may bigat na ang sinabi. 📢",
-  "Ang bilis mong mag-reply, sana ganoon din kabilis umintindi. 🧠",
-  "Nag-iba ka na naman ng topic, naligaw na ba ang argumento? 🗺️",
-  "Puro ka confidence, pero nasaan ang evidence? 🔎",
-  "Ang lakas ng entrance mo, wala namang plot twist. 🎬",
-  "Parang loading screen ang argumento mo, walang dumadating. ⏳",
-  "Ang daming notification, wala namang bagong impormasyon. 📱",
-  "Hindi ito contest ng haba ng chat, point ang hinahanap. 🎯",
-  "Ang dami mong sinabi para hindi masagot ang tanong. 😭",
-  "Puro ka reaction, pero walang explanation. 🎭",
-  "Kung may medal sa pag-iwas sa topic, may podium ka na. 🏆",
-  "Ang layo na ng sagot mo, parang ibang conversation na. 🛣️",
-  "May confidence ka nga, pero kailangan pa rin ng context. 🗿",
-  "Puro ka side comment, nasaan na ang main point? 💬",
-  "Parang trailer ang banat mo, pero walang actual content. 🎥",
-  "Ang dami mong edits sa sinabi mo, pero same pa rin ang point. ✍️",
-  "Kung puro volume ang basehan, panalo ka na sana. 🔊",
-  "Hindi porket ikaw ang huling nag-message, ikaw na ang tama. 📩",
-  "Ang daming emoji, kulang sa paliwanag. 🤡",
-  "Puro ka 'trust me bro', nasaan ang proof? 🧾",
-  "Ang bilis mong mag-assume, parang may subscription ka sa haka-haka. 😭",
-  "Nag-demand ka ng respeto pero ayaw mong makinig. 🗿",
-  "Ang point mo nag-AFK habang ikaw tuloy-tuloy sa typing. 🎮",
-  "Parang group project ang argumento mo, walang may gustong magdala. 📚",
-  "Nag-reply ka agad, pero hindi mo yata binasa ang tanong. 👀",
-  "Ang dami mong detour, wala pa rin sa destination. 🧭",
-  "Hindi lahat ng disagreement ay personal attack. 🧠",
-  "Puro ka comeback, pero walang direct answer. 🎯",
-  "Ang lakas ng claim, ang hina ng support. 📉",
-  "Kung may context ka, ilabas mo; huwag puro teaser. 🎬",
-  "Parang draft ang argumento mo, hindi pa ready i-submit. 📝",
-  "Puro ka debate mode kahit simpleng tanong lang. 😭",
-  "Ang daming side quest, nakalimutan na ang main mission. 🎮",
-  "Hindi ko kailangan ng paragraph kung puwedeng isang malinaw na sagot. 💬",
-  "Puro ka 'actually', pero wala namang bagong fact. 🗿",
-  "Ang bilis mong mag-correct, pero hindi mo muna chine-check. 🔎",
-  "Puro ka pressure sa iba, pero hindi mo maipaliwanag ang point mo. 😶",
-  "Hindi lahat ng tahimik ay talo; minsan tapos na silang makipagtalo. 🧊",
-  "Ang dami mong sinasabi, pero balik tayo sa tanong. 🎯",
-  "Puro ka plot twist, pero walang logical connection. 🎞️",
-  "Ang confident ng delivery, pero kailangan pa ng supporting details. 📚",
-  "Kung may resibo ka, ilabas; kung wala, huwag mag-imbento. 🧾",
-  "Ang argumento mo parang Wi-Fi sa malayo—putol-putol ang connection. 📶",
-  "Puro ka side-eye, pero walang direct explanation. 👀",
-  "Ang dami mong energy sa pagkontra, sana may effort din sa pag-unawa. 🧠",
-  "Hindi kailangang manalo sa bawat usapan para may point ka. 🤝",
-  "Puro ka last word, pero hindi last word ang basehan ng tama. 🗿",
-  "Ang daming caps lock, pero lowercase pa rin ang logic. 🔡",
-  "Puro ka 'obvious', pero hindi mo naman naipaliwanag. 😭",
-  "Ang daming confidence sa conclusion, kulang naman ang premises. 📉",
-  "Hindi sapat ang pagiging maingay para maging convincing. 🔊",
-  "Puro ka comeback, pero parang copy-paste lang sa internet. ♻️",
-  "Ang dami mong tanong pabalik, pero hindi mo sinagot ang una. 🔄",
-  "Puro ka accusations, pero wala namang supporting evidence. 🧾",
-  "Ang layo na ng usapan, pero hindi pa rin nasasagot ang original point. 🧭",
-  "Kung gusto mong kontrahin, kontrahin ang idea—huwag ang tao. 🧠",
-  "Puro ka drama sa comments, pero simple lang naman ang tanong. 🎭",
-  "Ang haba ng reply mo, pero kailangan pa ring hulaan ang point. 🕵️",
-  "Puro ka 'gets mo ba?', pero ikaw ang hindi sumagot. 😭",
-  "Ang daming statement, pero walang malinaw na conclusion. 📝",
-  "Hindi lahat ng mabilis mag-type, mabilis umintindi. ⌨️",
-  "Puro ka confidence, pero hindi confidence ang citation. 📚",
-  "Ang argument mo parang browser na maraming tabs, walang natatapos. 🌐",
-  "Puro ka redirect, parang link na hindi nagbubukas. 🔗",
-  "Ang daming sinabi, pero balik tayo sa facts. 🔎",
-  "Puro ka sarcasm, pero wala namang sagot sa issue. 🎭",
-  "Kung may point ka, sabihin nang diretso. Huwag puro paligoy. 🎯",
-  "Ang daming detalyeng hindi kailangan, pero wala ang pinaka-importante. 🗂️",
-  "Puro ka 'read carefully', pero ikaw yata ang nag-skip. 👓",
-  "Ang bilis mong mag-react, pero baka puwedeng mag-isip muna. 🧠",
-  "Puro ka argument by volume, hindi by evidence. 🔊",
-  "Ang dami mong counterpoint, pero wala sa tanong ang kalahati. 🧩",
-  "Hindi kailangan ng personalan para maipaliwanag ang disagreement. 🤝",
-  "Puro ka mockery, pero hindi mo na-address ang claim. 🎯",
-  "Ang daming side remarks, pero kulang ang actual answer. 💬",
-  "Puro ka 'cope', pero wala ka ring counterargument. 🗿",
-  "Ang dami mong sinasabi tungkol sa tao, wala tungkol sa punto. 🧠",
-  "Kung mali ako, ipakita kung saan—hindi yung puro insulto. 🔎",
-  "Puro ka pa-victory lap, hindi pa nga tapos ang usapan. 🏁",
-  "Ang dami mong reaction, pero isang malinaw na sagot lang kailangan. 📩",
-  "Puro ka grand speech, pero nawawala ang main idea. 🎤",
-  "Ang dami mong claims, pili ka muna ng isang mapapatunayan. 🧾",
-  "Puro ka 'facts', pero walang source. 📚",
-  "Ang bilis mong manghusga, pero mabagal magbasa ng context. 👀",
-  "Puro ka sarcasm, pero hindi nito pinapalakas ang argumento. 🎭",
-  "Ang dami mong side comments, pero hindi ka pa rin nakakasagot. 💬",
-  "Puro ka bait, pero kailangan pa rin ng malinaw na paliwanag. 🎯",
-  "Ang dami mong typing indicator, pero wala pa ring point. ⌨️",
-  "Hindi mo kailangang i-extend ang usapan kung wala nang bagong sasabihin. 🧊",
-  "Puro ka yabang, pero mas okay sana kung may supporting facts. 🧾",
-  "Ang dami mong pabalik-balik, parang hindi mo alam ang destination. 🧭",
-  "Puro ka banat, pero hindi lahat ng banat ay argument. 🗿",
-  "Ang dami mong words, pero clarity ang kulang. ✍️",
-  "Puro ka 'end of discussion', pero ikaw pa rin ang nagre-reply. 🔄",
-  "Ang dami mong conclusion, pero hindi mo pinakita ang proseso. 🧠",
-  "Puro ka insulto, pero hindi nito sinasagot ang tanong. 🎯",
-  "Ang dami mong flex, pero hindi naman iyon ang topic. 🏷️",
-  "Puro ka defensive, pero puwede namang sagutin nang kalmado. 🧊",
-  "Ang dami mong assumptions, pero kulang sa verification. 🔎",
-  "Puro ka 'obvious naman', pero explain mo para malinaw. 📚",
-  "Ang dami mong reply, pero parang wala kang binasang reply ng iba. 👀",
-  "Puro ka distraction, balik sa main point. 🎯",
-  "Ang dami mong sinasabi na hindi related, parang nag-open ka ng ibang tab. 🌐",
-  "Puro ka confidence, pero kailangan pa ring patunayan ang claim. 🧾",
-  "Ang dami mong argument, pero hindi mo kinilala ang counterpoint. 🧠",
-  "Puro ka pa-savage, pero simple explanation lang naman ang hinihingi. 😭",
-  "Ang dami mong noise, pero nasaan ang signal? 📡",
-  "Puro ka reaction, pero hindi mo na-address ang sinabi. 🎭",
-  "Ang dami mong sinabi, pero ang tanong ay hindi pa rin nasasagot. 📩",
-  "Puro ka 'last reply ko na', pero nandito ka pa rin. 🔄",
-  "Ang dami mong rebuttal, pero hindi lahat relevant. 🧩",
-  "Puro ka yabang, pero mas convincing sana kung may facts. 🧾",
-  "Ang dami mong banat, pero walang direct answer. 🎯",
-  "Puro ka mema, pero hindi nito nadadagdagan ang point mo. 🗿",
-  "Ang dami mong effort sa reply, sana may effort din sa pag-unawa. 🧠",
-  "Puro ka argument, pero walang maayos na conclusion. 📝",
-  "Ang dami mong sinabi, pero simple lang ang kailangan: sagot. 🎯",
-  "Ang dami mong rebuttal, pero hindi mo nasagot ang pinakaimportanteng tanong. 🎯",
-  "Puro ka flex, pero hindi naman iyon ang pinag-uusapan. 🗿",
-  "Ang dami mong sinasabi tungkol sa tono, pero paano naman ang mismong punto? 💬",
-  "Hindi porket mahaba ang paliwanag, malinaw na agad. 📝",
-  "Puro ka hirit, pero kapag seryosong tanong na, tahimik. 🤐",
-  "Ang dami mong side quest, balik tayo sa main mission. 🎮",
-  "Puro ka 'basahin mo ulit', pero baka ikaw ang kailangang magbasa ulit. 👀",
-  "Ang daming palusot, pero simple lang ang hinihingi: linaw. 🔎",
-  "Puro ka rebuttal sa bagay na hindi naman sinabi. 🧩",
-  "Ang dami mong confidence sa maling interpretation. 📉",
-  "Hindi lahat ng hindi sumasang-ayon sa'yo ay kalaban. 🤝",
-  "Puro ka personal attack, pero hindi mo natatamaan ang argumento. 🎯",
-  "Ang dami mong reply, pero hindi nadadagdagan ang impormasyon. 🔄",
-  "Puro ka 'ikaw kasi', pero hindi iyon sagot sa tanong. 🗿",
-  "Ang dami mong assumptions, pero nasaan ang actual evidence? 🧾",
-  "Puro ka pa-deep, pero simple lang naman ang issue. 🌊",
-  "Ang dami mong pinupuna, pero wala kang konkretong alternatibo. 🛠️",
-  "Puro ka reaction, pero wala kang explanation. 🎭",
-  "Ang dami mong sinasabi na parang hindi mo nabasa ang context. 👓",
-  "Hindi mo kailangang manlait para maipagtanggol ang point mo. 🧠",
-  "Puro ka 'tapos na tayo', pero ikaw ang bumabalik sa thread. 🔁",
-  "Ang dami mong conclusion, pero kulang ang ebidensya. 📚",
-  "Puro ka confidence, pero hindi iyon kapalit ng accuracy. 🎯",
-  "Ang dami mong sinasabi, pero wala pa ring malinaw na sagot. 💬",
-  "Puro ka sarcasm, pero hindi nito binabago ang facts. 🔎",
-  "Ang dami mong point, pero alin diyan ang direktang sagot? 🧩",
-  "Puro ka parinig, pero mas madali sana kung diretsahan. 📣",
-  "Ang dami mong typing, pero parang hindi mo muna inayos ang thought. ⌨️",
-  "Puro ka pa-victim, pero hindi pa natin napag-usapan ang claim. 🎭",
-  "Ang dami mong binanggit, pero hindi naman relevant sa issue. 🗂️",
-  "Puro ka debate mode, kahit simpleng clarification lang. 😭",
-  "Ang dami mong sinasabi tungkol sa intensyon, pero sagutin muna ang point. 🎯",
-  "Puro ka 'common sense', pero hindi pare-pareho ang context. 🧠",
-  "Ang dami mong hirit, pero wala kang naidagdag na bagong idea. ♻️",
-  "Puro ka distraction, pero hindi nawawala ang original question. 📌",
-  "Ang dami mong pahayag, pero wala kang maayos na halimbawa. 📝",
-  "Puro ka pa-savage, pero hindi naman kailangan ng insulto para sumagot. 🗿",
-  "Ang dami mong sinasabi, pero parang ikaw rin ang naguguluhan. 🧭",
-  "Puro ka 'research ka muna', pero puwede mo ring ibigay ang source. 🔗",
-  "Ang dami mong rebuttal, pero hindi mo kinonsider ang buong sinabi. 👀",
-  "Puro ka conclusion, pero hindi mo pinakita kung paano ka nakarating doon. 🧠",
-  "Ang dami mong side comments, pero wala pa ring direct answer. 🎯",
-  "Puro ka 'obvious', pero hindi obvious kung hindi mo ipapaliwanag. 📚",
-  "Ang dami mong sinasabi, pero hindi mo naman nililinaw ang misunderstanding. 🧩",
-  "Puro ka reply, pero wala nang bagong laman. 🔄",
-  "Ang dami mong pinapatunayan, pero hindi iyon ang tanong. 📍",
-  "Puro ka pa-quote, pero mas okay kung sariling paliwanag. ✍️",
-  "Ang dami mong sinasabi tungkol sa grammar, pero hindi pa rin nasasagot ang idea. 📖",
-  "Puro ka confidence, pero mas okay kung may context. 🔎",
-  "Ang dami mong hirit, pero ang point parang naiwan sa unang message. 🧳",
-  "Puro ka argument, pero kailangan mo ring makinig sa sagot. 👂",
-  "Ang dami mong sinabi, pero puwede sanang mas simple at malinaw. 📝",
-  "Puro ka counterpoint, pero hindi mo tinukoy kung anong claim ang kinokontra. 🎯",
-  "Ang dami mong assumptions, pero tanong muna bago konklusyon. 🧠",
-  "Puro ka pa-cool, pero mas okay ang direct at malinaw na usapan. 💬",
-  "Ang dami mong sinabi, pero hindi mo naman nasagot ang follow-up. 📩",
-  "Puro ka debate, pero minsan kailangan lang aminin kapag hindi sigurado. 🤝",
-  "Ang dami mong sinasabi na parang kailangan laging may panalo. 🏁",
-  "Puro ka rebuttal, pero hindi lahat ng sagot ay kailangang kontra. 🧩",
-  "Ang dami mong pinupunto, pero hindi mo inayos ang pagkakasunod-sunod. 🗂️",
-  "Puro ka 'read the room', pero basahin din natin ang actual message. 👀",
-  "Ang dami mong banat, pero ang linaw ng sagot ang mas kailangan. 🎯",
-  "Puro ka 'end of story', pero hindi pa malinaw ang story. 📖",
-  "Ang dami mong reaction, pero isang source lang sana para malinaw. 🔗",
-  "Puro ka insulto, pero hindi iyon ebidensya. 🧾",
-  "Ang dami mong sinasabi, pero hindi mo pa rin nililinaw ang claim. 🔎",
-  "Puro ka 'cope', pero hindi mo pa rin naipapaliwanag ang side mo. 💬",
-  "Ang dami mong argument, pero huwag nating kalimutan ang original topic. 📌",
-  "Puro ka hula, pero puwedeng magtanong muna. 🧠",
-  "Ang dami mong sinasabi tungkol sa iba, pero kulang ang paliwanag sa idea. 🎯",
-  "Puro ka 'trust me', pero mas madaling maniwala kung may proof. 🧾",
-  "Ang dami mong sinulat, pero hindi mo tinukoy ang pinakaimportanteng punto. 📝",
-  "Puro ka 'fact check', pero i-link mo rin ang source. 🔗",
-  "Ang dami mong hirit, pero mas maganda kung may laman ang bawat isa. 📚",
-  "Puro ka paliwanag sa tono, pero ang claim mismo ang pag-usapan. 💬",
-  "Ang dami mong sinasabi, pero hindi mo kinilala ang valid na tanong. 🤔",
-  "Puro ka 'learn to read', pero dapat pareho tayong malinaw sa context. 👓",
-  "Ang dami mong pinapalawak, pero hindi naman kailangang gawing komplikado. 🧩",
-  "Puro ka argument by repetition, pero hindi nagiging totoo ang claim dahil inuulit. 🔁",
-  "Ang dami mong sinabi, pero wala kang binigay na konkretong halimbawa. 📌",
-  "Puro ka 'everyone knows', pero sino ang source? 🔎",
-  "Ang dami mong hirit, pero mas okay kung may respeto sa usapan. 🤝",
-  "Puro ka reply sa bawat detalye, pero hindi mo sinagot ang main question. 🎯",
-  "Ang dami mong sinabi, pero puwede mong linawin nang hindi nang-iinsulto. 🧠",
-  "Puro ka 'you're wrong', pero saan eksakto? 📍",
-  "Ang dami mong assumptions, pero hindi pa natin alam ang buong context. 🧩",
-  "Puro ka side-taking, pero puwedeng suriin muna ang facts. 🔎",
-  "Ang dami mong sinasabi, pero ang simple ng kailangan: direct answer. 💬",
-  "Puro ka argumento, pero hindi lahat ng disagreement kailangan ng away. 🧊",
-  "Ang dami mong sinulat, pero sana isang malinaw na punto bawat message. 📝",
-  "Puro ka pa-lecture, pero hindi mo naman sinagot ang tanong. 🎓",
-  "Ang dami mong pinapansin, pero hindi ang mismong issue. 🎯",
-  "Puro ka hirit, pero hindi lahat ng hirit ay may point. 🗿",
-  "Ang dami mong sinasabi, pero mas okay kung may malinaw na conclusion. 📝",
-  "Puro ka 'I already explained', pero baka kailangan lang ng mas malinaw na paliwanag. 💬",
-  "Ang dami mong sinasabi tungkol sa debate, pero hindi naman ito paligsahan. 🤝",
-  "Puro ka confidence, pero mas maganda kung sinusuportahan ng facts. 📚",
-  "Ang dami mong reply, pero wala pa ring sagot sa tanong na nagsimula nito. 🔄",
-  "Puro ka distraction, pero nandito pa rin ang original claim. 📌",
-  "Ang dami mong sinabi, pero hindi mo naman pinatunayan ang conclusion. 🧾",
-  "Puro ka 'I win', pero hindi ikaw ang judge ng sarili mong argument. 🏁",
-  "Ang dami mong typing, pero clarity pa rin ang kulang. ⌨️",
-  "Puro ka banat, pero mas solid kung may actual na punto. 🎯",
-  "Ang dami mong sinabi, pero hindi mo kailangang gawing personal ang disagreement. 🤝",
-  "Puro ka argument, pero puwedeng maging mahinahon habang malinaw. 🧊",
-  "Ang dami mong pinupuna, pero ano ang mismong sagot mo? 💬",
-  "Puro ka confidence, pero ang facts ang dapat magdala ng argumento. 📚",
-  "Ang dami mong sinabi, pero isang direct answer lang ang hinihingi. 🎯",
-  "Ang argumento mo, paikot-ikot pero walang malinaw na punto. 🎯",
-  "Hindi lahat ng mahaba, malalim. Minsan mahaba lang talaga. 📚",
-  "May punto ka sana, kaso natabunan ng yabang. 🤡",
-  "Kung confidence lang ang basehan, panalo ka na. Kaso usapan ito. 💬",
-  "Ang lakas ng delivery, pero nasaan ang supporting details? 📝",
-  "Hindi porke ikaw ang huling nag-reply, ikaw na ang tama. ⏳",
-  "Mas okay sana kung facts ang dala kaysa puro parinig. 🔎",
-  "Ang daming energy, pero kulang sa explanation. ⚡",
-  "Hindi debate ang paramihan ng emoji. 😂",
-  "May sagot ka sa lahat, pero walang direktang sagot sa tanong. 🎯",
-  "Ang bilis mong manghusga, pero ang bagal mong magpaliwanag. 🐢",
-  "Puro conclusion, nasaan ang evidence? 🔍",
-  "Hindi ako nalito sa argumento mo; wala lang talagang malinaw. 🧩",
-  "Mas convincing sana kung hindi puro personal na banat. 💬",
-  "Ang ingay ng reply, pero tahimik ang facts. 📉",
-  "Hindi lahat ng disagreement ay hate. Minsan hindi lang talaga tugma ang logic. 🧠",
-  "May point ka, pero kailangan mo pa itong ayusin. 🛠️",
-  "Hindi kailangang manlait para maipagtanggol ang argumento. 🤝",
-  "Kung may source ka, ilapag mo. Kung wala, linawin mo muna. 📎",
-  "Ang daming claims, pero wala pang napapatunayan. 📋",
-  "Hindi sapat ang 'trust me' kapag facts ang pinag-uusapan. 🔎",
-  "Ang confident ng sagot, parang hindi binasa ang tanong. 📖",
-  "Mas madaling manalo sa argumento kapag ikaw lang ang kausap mo. 🪞",
-  "Hindi ko kailangan ng essay; kailangan ko ng malinaw na sagot. ✍️",
-  "Ang point ng usapan ay magpaliwanagan, hindi magparamihan ng insulto. 💡",
-  "Kung mali ako, itama mo gamit ang facts. Hindi gamit ang caps lock. 🔠",
-  "Hindi personalan ang topic, pero ginawa mong personalan. 🎭",
-  "May oras ka sa mahabang reply, sana may oras ka rin sa pag-check ng facts. ⏰",
-  "Ang daming palamuti ng sagot, pero kulang ang laman. 🎁",
-  "Hindi lahat ng tunog matalino ay may sense. 🧠",
-  "Kung may counterargument ka, sabihin mo nang diretso. 🎯",
-  "Ang layo na ng sagot mo sa original na tanong. 🛣️",
-  "Hindi ako naghahanap ng drama; naghahanap ako ng paliwanag. 🔍",
-  "Mas okay ang isang malinaw na punto kaysa sampung paikot-ikot. 🧭",
-  "Hindi mo kailangang magpanggap na panalo para magkaroon ng punto. 🏁",
-  "Ang daming reaction, pero wala pang actual na sagot. 💬",
-  "Hindi porke maraming sumang-ayon, automatic nang tama. 📊",
-  "Ang argumento ay sinusuri, hindi sinusukat sa lakas ng boses. 🎙️",
-  "Kung may mali sa sinabi ko, tukuyin mo kung alin. 📝",
-  "Hindi lahat ng maikling sagot ay walang laman; minsan direkta lang. 🎯",
-  "Ang daming side comment, pero hindi nasagot ang main question. 📌",
-  "Hindi kailangang gawing competition ang simpleng diskusyon. 🤝",
-  "Facts muna bago flex. 🔎",
-  "Hindi ko minamaliit ang opinyon mo; hinihingi ko lang ang dahilan. 💭",
-  "Ang point ay hindi kung sino ang mas maangas, kundi kung ano ang tama. ⚖️",
-  "Mas malinaw ang usapan kapag parehong nakikinig. 👂",
-  "Hindi sagot ang pag-uulit ng claim nang mas malakas. 🔁",
-  "Kung may bagong impormasyon ka, ilabas mo. Kung wala, huwag paikot-ikot. 📚",
-  "Hindi ko sinabing wala kang opinyon; tinatanong ko kung ano ang basehan. 🧾",
-  "Ang daming salita, pero hindi nagbago ang argumento. 🔄",
-  "Hindi kailangan ng personal attack para maging matibay ang punto. 🛡️",
-  "Kung gusto mong maintindihan, ipaliwanag mo nang simple. 💡",
-  "Ang reply mo ay mahaba, pero ang tanong ay simple lang. 📏",
-  "Hindi ko kailangang sumang-ayon para respetuhin ang paliwanag mo. 🤝",
-  "May difference ang pagiging direct sa pagiging bastos. 💬",
-  "Kung may proof, mas okay kung iyon ang unang ilabas. 📎",
-  "Hindi lahat ng disagreement kailangan ng last word. 🏁",
-  "Mas kapani-paniwala ang sagot kapag may malinaw na dahilan. 🧠",
-  "Hindi ko kailangan ng banat; kailangan ko ng sagot sa punto. 🎯",
-  "Ang usapan ay hindi paunahan sa pag-type. ⌨️",
-  "Kung gusto mong mag-correct, maging specific. 📝",
-  "Mas mabilis matatapos ang diskusyon kapag hindi lumilihis sa topic. 🧭",
-  "Ang daming assumptions, pero kulang sa tanong. ❔",
-  "Hindi lahat ng confident ay correct, at hindi lahat ng tahimik ay talo. ⚖️",
-  "Mas okay ang malinaw na disagreement kaysa pilit na pang-iinsulto. 🤝",
-  "Kung hindi mo alam ang sagot, puwedeng sabihin iyon. 📚",
-  "Hindi kahinaan ang pag-amin kapag may kailangang itama. 💡",
-  "Ang point mo ang pag-usapan natin, hindi ang pagkatao ng isa't isa. 🎯",
-  "Hindi sapat ang sarcasm para mapatunayan ang claim. 🎭",
-  "Mas madaling maintindihan ang sagot kapag may halimbawa. 🧩",
-  "Hindi lahat ng tanong ay challenge; minsan gusto lang ng paglilinaw. ❓",
-  "Kung may disagreement, simulan sa mismong claim. 🔍",
-  "Ang daming detour, pero hindi pa rin tayo nakakarating sa sagot. 🛣️",
-  "Hindi paramihan ng reply ang sukatan ng magandang argumento. 📏",
-  "Mas malakas ang facts kaysa sa paulit-ulit na yabang. 📊",
-  "Kung malinaw ang punto mo, hindi mo kailangang ulitin nang sampung beses. 🔁",
-  "Ang maayos na paliwanag, hindi kailangang may kasamang insulto. 🤝",
-  "Balik tayo sa topic; doon natin malalaman kung may punto. 🎯"
+const ROASTS = [
+  "Kailangan ba talaga yang message na yan? 🥷🩸",
+  "Tama na, nawalan na kami ng brain cells kababasa niyan 🥷🩸",
+  "Nag-type ka ng ganyan para lang ipahiya ang sarili mo? 🥷🩸",
+  "Main character ang dating, pero mahina ang kwento 🥷🩸",
+  "Sino ba ang nanakit sa’yo? Kasi nasaktan kaming lahat sa sentence na yan 🥷🩸",
+  "Tigil na bago ka pa ma-restraining order ng group chat 🥷🩸",
+  "Sinabi mo talaga yan nang malakas… sa text… permanente na 🥷🩸",
+  "Malakas ang loob mo, pero naka-mute ang utak 🥷🩸",
+  "Kaya nga kailangan ng mute button sa GC para sa ilang tao 🥷🩸",
+  "Gumising ka at pinili mong patayin ang grammar 🥷🩸",
+  "Hindi ako galit, dismayado lang… at napahiya para sa’yo 🥷🩸",
+  "Panis na agad ang message mo, parang gatas na naiwan sa araw 🥷🩸",
+  "Siguradong may teacher sa Filipino na umiiyak ngayon 🥷🩸",
+  "Ang dating mo, parang “peak ko na ang high school” 🥷🩸",
+  "Binagsak mo yan na parang apoy. Hindi naman 🥷🩸",
+  "Tahimik ang GC bago ka dumating 🥷🩸",
+  "Mag-log off ka na para sa mental health ng lahat 🥷🩸",
+  "Desisyon yan… matapang, pero kakila-kilabot 🥷🩸",
+  "Nagno-notes ako kung paano HINDI makipag-usap 🥷🩸",
+  "hahaha ano raw 💀",
+  "teka teka, ano yung sinabi mo? 😭",
+  "seryoso ba yan? 🥷",
+  "grabe ka naman, ang aga-aga pa 😭",
+  "uy gising, hindi ka na nakakatawa 🥷🩸",
+  "isa-isa lang, nahihilo ako 😭",
+  "tapos? may kasunod pa ba yan? 👀",
+  "di ko alam kung matatawa ako o maaawa eh 💀",
+  "nabasa ko na lahat, zero pa rin ang puntos 🥷🩸",
+  "may nagtanong ba? 😭",
+  "parang may hinihintay kang palakpak eh 👏",
+  "grabe, nag-effort ka pang mag-type niyan 💀",
+  "ayan na naman tayo 🥷🩸",
+  "nakakahiya pero sige, ituloy mo lang 🍿",
+  "bakit ang seryoso mo? relax ka lang 😭",
+  "may sasabihin ka pa ba o yan na yun? 👀",
+  "nakakatawa ka, hindi mo lang alam kung bakit 💀",
+  "sino ba nag-imbita sa kanya? 😭",
+  "mema lang yan, sige na 🥷🩸",
+  "hala, nasaktan ba kita? pasensya na, hindi pala 💀",
+  "ang ingay mo pero ang gaan ng laman 😭",
+  "medyo nakakailang yan 🥷🩸",
+  "tama na yan, napapagod na mata ko kakabasa 😭",
+  "huwag kang mag-alala, hindi ka naman iniintindi ng iba 😌",
+  "saglit, bumabagal utak ko pagkabasa niyan 💀",
+  "hindi ako galit ha, natatawa lang ako sa’yo 😭",
+  "anong meron? may pinaghuhugutan ka ba? 👀",
+  "relax 😭",
+  "nagloloading pa utak niya, hintay lang tayo ⏳",
+  "ang bilis mag-type, ang bagal mag-isip 🐢",
+  "grabe ang lakas ng energy mo ngayon 💀",
+  "lakas ng trip mo ngayon 🥷🩸",
+  "ay sorry, akala ko may punto 😭",
+  "Hindi porket mahaba ang message mo, may laman na yan 💀",
+  "Hindi porket ikaw ang huling nag-reply, ikaw na ang tama 👀",
+  "Hindi porket malakas ang boses mo, malakas na rin ang punto mo 🍿",
+  "Hindi porket maraming emoji, malinaw na ang sinabi mo 🍿",
+  "Hindi porket nag-caps lock ka, totoo na yan 😂",
+  "Hindi porket mabilis kang mag-type, mabilis ka na ring umintindi 💀",
+  "Hindi porket confident ka, tama ka na 🥷🩸",
+  "Hindi porket paulit-ulit mong sinabi, magiging totoo na yan 🙄",
+  "Hindi porket tahimik ang iba, sang-ayon sila sa’yo 🙄",
+  "Hindi porket may opinion ka, kailangan mo nang ibahagi lahat 🍿",
+  "Hindi porket ikaw ang pinakamaingay, ikaw na ang pinakamatalino 🗿",
+  "Hindi porket nag-reply ka agad, nabasa mo na ang buong message 🙄",
+  "Hindi porket marami kang sinabi, may sinabi ka na 🍿",
+  "Hindi porket nag-sarcasm ka, napatunayan mo na ang point mo 🤦",
+  "Hindi porket nagalit ka, mananalo ka na 😌",
+  "Hindi porket may ginawa kang essay, may punto ka na 🙄",
+  "Hindi porket nag-flex ka, sagot na yun sa tanong 😌",
+  "Hindi porket nag-quote ka, may source ka na 🥷🩸",
+  "Hindi porket ikaw ang unang nag-comment, ikaw na ang may-ari ng usapan 😭",
+  "Hindi porket nag-edit ka ng message, nagbago na ang point 🙄",
+  "Hindi porket sumigaw ka sa chat, nakinig na ang lahat 💀",
+  "Hindi porket nagpalit ka ng topic, nawala na ang tanong 💀",
+  "Hindi porket nag-type ka nang nag-type, nagkaroon na ng laman 🤡",
+  "Hindi porket may reaction ka, may paliwanag ka na 💀",
+  "Hindi porket tumahimik kami, talo na kami 😌",
+  "Hindi porket ikaw ang nag-start, ikaw na ang tama 😭",
+  "Hindi porket nagtanong ka pabalik, nasagot mo na ang tanong 😂",
+  "hahaha ano raw 👀",
+  "ay grabe",
+  "teka lang, nahihilo ako",
+  "pwede pa-ulit? hindi ko nakuha 👀",
+  "ang lakas ng tama mo ngayon 🤦",
+  "sige lang, ituloy mo yan 💀",
+  "may kasunod pa ba? 💀",
+  "nakakaloka ka 🤡",
+  "ang random mo naman",
+  "bigla kang sumulpot ah",
+  "kumain ka na ba? ang init ng ulo mo 🤦",
+  "inom ka muna ng tubig 😭",
+  "pahinga ka muna 👀",
+  "hinga muna tayo 🗿",
+  "kalma lang",
+  "ay, may nagsalita pala 🍿",
+  "pinaghandaan mo ba yan? 💀",
+  "may script ka ba? 🙄",
+  "sino ba kausap mo? 🗿",
+  "kanino ka ba nagpapatunay? 🤡",
+  "wala akong nakuha dun 🙄",
+  "napansin ba ng iba yan o ako lang? 😌",
+  "gets ko na… hindi pala 😭",
+  "ano raw ulit? 🥷",
+  "buti nalang may delete button 🤦",
+  "ayan, nag-iingay na naman",
+  "grabe, nag-effort ka pa talaga 😌",
+  "pwede bang isa-isa lang?",
+  "hindi ko alam kung matatawa ako o hindi 💀",
+  "ang bigat ng sinabi mo… sa mata 😌",
+  "umupo ka muna, mainit ulo mo 🤦",
+  "ay, may pasabog pala 🍿",
+  "maya na yan, kain muna ako",
+  "hindi ko pa rin gets, pero sige 🤡",
+  "nakakapagod ka basahin, ang totoo 😂",
+  "ang dami mong tinype, ano na ba ang point? 😌",
+  "tapos na ba yung speech mo? 🗿",
+  "sandali, may popcorn pa ako 🤡",
+  "bakit parang galit ka? wala namang nang-away 😭",
+  "kaya pala tahimik ang GC kanina",
+  "may nag-reply pala, akala ko hangin 🙄",
+  "tama na yan, baka mapagod daliri mo 🍿",
+  "di ko alam kung ano nangyari pero sige 🤡",
+  "wala akong masabi… literal 😌",
+  "ay naku, heto na naman 🍿",
+  "ang saya mo ngayon ah 😭",
+  "ang dami mong hirit, wala akong maisagot 💀",
+  "hindi ko kailangan ng ganyan ngayon 🤦",
+  "ayos lang yan, mawawala rin yan 🍿",
+  "Hay nako, ang lakas mong magmarunong, pero hindi pa rin nasasagot ang tanong 🤡",
+  "Ang dami mong energy, pero parang walang nakabasa 🗿",
+  "Seryoso, ang bilis mong manghusga, pero wala namang laman 🍿",
+  "Ang bilis mong mag-type, pero mas maingay pa kaysa sa malinaw 💀",
+  "Aba, ang dami mong side comments, pero pang-intro pa lang yan 😂",
+  "Hay nako, ang ingay mo, tapos ikaw rin pala ang naguguluhan 🙄",
+  "Grabe, ang hilig mong sumingit, tapos ikaw rin pala ang naguguluhan 🗿",
+  "Ay wow, ang drama mo, pero parang walang nakabasa 🗿",
+  "Teka, ang dami mong alam, pero walang pumapansin 🥷",
+  "Ang ingay mo, pero walang kasunod 🤦",
+  "Ang dami mong reaction, pero hindi ka pa rin nakaka-convince 🗿",
+  "Ay sus, ang dami mong plot twist, pero walang pumapansin 🥷🩸",
+  "Ang ingay mo, pero parang ikaw lang ang naniniwala 🍿",
+  "Ayan na naman, ang dami mong paliwanag, pero parang ikaw lang ang naniniwala 👀",
+  "Grabe, ang dami mong pa-cool, tapos kami pa ang napagod 💀",
+  "Sige, ang tagal mong mag-isip, pero parang ikaw lang ang naniniwala 👀",
+  "Sige, ang dami mong alam, pero sayang lang ang oras namin 👀",
+  "Ang dami mong reaction, pero hindi iyon sapat para manalo 😭",
+  "Teka, ang aga mong mag-ingay, pero walang nakakaintindi 🥷🩸",
+  "Sige, ang daming letra ng message mo, pero walang pumapansin 🤦",
+  "Ay wow, ang lakas mong magmarunong, pero mas malakas pa ang katahimikan ng iba 🥷🩸",
+  "Ang tagal mong mag-isip, pero parang ikaw lang ang naniniwala 👀",
+  "Uy, ang hilig mong sumingit, pero mas malakas pa ang katahimikan ng iba 😌",
+  "Naku, ang yabang mo, pero parang loading pa rin ang point 😭",
+  "Aba, ang tagal mong mag-isip, pero hindi iyon sapat para manalo 🍿",
+  "Naku, ang dami mong plot twist, pero walang nakakaintindi 😂",
+  "Hala, ang haba ng message mo, tapos wala ring kwenta sa huli 👀",
+  "Ang dami mong pasabog, pero parang ikaw lang ang naniniwala 🥷",
+  "Ang dami mong banat, pero wala namang laman 🍿",
+  "Uy, ang daming letra ng message mo, pero puro hangin lang 🤦",
+  "Hay nako, ang bilis mong manghusga, pero walang nakakaintindi 🗿",
+  "Hala, ang dami mong hugot, pero hindi ka naman tinatanong 💀",
+  "Grabe, ang dami mong pasabog, pero wala pa ring direksyon 👀",
+  "Uy, ang bilis mong mag-type, tapos wala ring kwenta sa huli 🤡",
+  "Ang dami mong energy, pero mas malakas pa ang katahimikan ng iba 🥷",
+  "Ang daming letra ng message mo, pero mas maingay pa kaysa sa malinaw 😂",
+  "Ayan na naman, ang dami mong paliwanag, pero mas malakas pa ang katahimikan ng iba 🍿",
+  "Hala, ang dami mong pasabog, tapos wala pa ring bagong sinabi 😭",
+  "Hala, ang ingay mo, pero hindi ka naman tinatanong 🍿",
+  "Ang tagal mong mag-isip, pero mas malakas pa ang katahimikan ng iba 💀",
+  "Aba, ang dami mong energy, tapos wala namang sagot 🍿",
+  "Grabe, ang dami mong side comments, pero mas maingay pa kaysa sa malinaw 🥷🩸",
+  "Grabe, ang dami mong sinabi, pero hindi pa rin nasasagot ang tanong 😌",
+  "Ang daming letra ng message mo, pero hindi iyon sapat para manalo 🤦",
+  "Hay nako, ang dami mong pa-cool, pero hindi ka naman tinatanong 👀",
+  "Ayan na naman, ang hilig mong mag-assume, pero parang loading pa rin ang point 💀",
+  "Ang dami mong hugot, pero wala ka namang napatunayan 👀",
+  "Oy, ang hilig mong mag-assume, tapos kami pa ang napagod 👀",
+  "Ang haba ng message mo, pero parang walang nakabasa 💀",
+  "Ayan na naman, ang dami mong alam, tapos wala ring kwenta sa huli 🤡",
+  "Teka, ang bilis mong mag-type, pero hindi pa rin nasasagot ang tanong 🗿",
+  "Uy, ang dami mong plot twist, pero ni isa walang tumama 🥷🩸",
+  "Aba, ang dami mong alam, tapos wala namang nakinig 👀",
+  "Naku, ang tagal mong mag-isip, tapos wala namang nakinig 🙄",
+  "Grabe, ang dami mong paliwanag, pero parang ikaw lang ang naniniwala 👀",
+  "Ay sus, ang yabang mo, pero hindi ka pa rin nakaka-convince 😂",
+  "Ay sus, ang drama mo, pero hindi pa rin nasasagot ang tanong 🥷",
+  "Ang dami mong alam, pero hindi ka naman tinatanong 🤡",
+  "Hay nako, ang bilis mong manghusga, pero ni isa walang tumama 😂",
+  "Seryoso, ang dami mong reaction, tapos ikaw rin pala ang naguguluhan 👀",
+  "Ang dami mong reaction, pero parang walang nakabasa 😌",
+  "Ang dami mong hugot, tapos wala namang sagot 🗿",
+  "Aba, ang dami mong pa-cool, pero hindi pa rin nasasagot ang tanong 😭",
+  "Ay wow, ang dami mong pasabog, pero kulang pa rin sa sense 😭",
+  "Naku, ang tagal mong mag-isip, pero parang walang nakabasa 😌",
+  "Teka, ang dami mong pa-cool, pero hindi ka naman tinatanong 😂",
+  "Oy, ang dami mong hugot, pero parang ikaw lang ang naniniwala 🙄",
+  "Aba, ang haba ng message mo, pero hindi ka pa rin nakaka-convince 🤦",
+  "Ang yabang mo, pero hindi pa rin nasasagot ang tanong 🥷🩸",
+  "Hala, ang lakas mong magmarunong, tapos wala ring kwenta sa huli 💀",
+  "Naku, ang lakas mong magmarunong, tapos wala pa ring bagong sinabi 😂",
+  "Ang yabang mo, pero hindi ka naman tinatanong 😭",
+  "Ay sus, ang dami mong paliwanag, pero walang nakakaintindi 🥷",
+  "Ang dami mong pasabog, tapos wala pa ring bagong sinabi 🥷🩸",
+  "Ayan na naman, ang dami mong reaction, pero walang kasunod 👀",
+  "Seryoso, ang hilig mong sumingit, pero hindi pa rin nasasagot ang tanong 🙄",
+  "Grabe, ang ingay mo, pero parang loading pa rin ang point 👀",
+  "Ay sus, ang tagal mong mag-isip, pero parang walang nakabasa 😌",
+  "Uy, ang hilig mong sumingit, pero parang ikaw lang ang naniniwala 🍿",
+  "Ay wow, ang dami mong energy, tapos wala namang sagot 🙄",
+  "Ang tagal mong mag-isip, tapos ikaw rin pala ang naguguluhan 💀",
+  "Sige, ang dami mong reaction, pero hindi ka pa rin nakaka-convince 🤡",
+  "Ayan na naman, ang dami mong side comments, pero ang labo pa rin ng punto mo 🍿",
+  "Sige, ang dami mong side comments, pero hindi pa rin nasasagot ang tanong 😌",
+  "Seryoso, ang dami mong reaction, pero hindi pa rin nasasagot ang tanong 👀",
+  "Hala, ang haba ng message mo, pero hindi ka pa rin nakaka-convince 🥷",
+  "Ay sus, ang daming letra ng message mo, tapos wala pa ring bagong sinabi 🍿",
+  "Ay wow, ang dami mong pa-cool, pero hindi ka naman tinatanong 🙄",
+  "Uy, ang ingay mo, pero ni isa walang tumama 🥷🩸",
+  "Uy, ang dami mong paliwanag, tapos wala pa ring bagong sinabi 🍿",
+  "Grabe, ang dami mong hugot, tapos wala namang sagot 🤡",
+  "Ayan na naman, ang yabang mo, pero hindi ka pa rin nakaka-convince 😂",
+  "Seryoso, ang hilig mong sumingit, pero pang-intro pa lang yan 🗿",
+  "Ang dami mong side comments, pero sayang lang ang oras namin 🍿",
+  "Uy, ang yabang mo, pero mas maingay pa kaysa sa malinaw 🍿",
+  "Grabe, ang dami mong pasabog, pero walang pumapansin 🥷",
+  "Ang dami mong plot twist, pero walang kasunod 😭",
+  "Ay sus, ang dami mong plot twist, tapos wala ring kwenta sa huli 🥷",
+  "Aba, ang yabang mo, pero ni isa walang tumama 🥷",
+  "Hala, ang lakas mong magmarunong, pero walang nakakaintindi 🥷",
+  "Grabe, ang dami mong paliwanag, pero pang-intro pa lang yan 🙄",
+  "Ayan na naman, ang hilig mong mag-assume, pero hindi ka pa rin nakaka-convince 😭",
+  "Hay nako, ang drama mo, tapos wala pa ring bagong sinabi 👀",
+  "Ang haba ng message mo, pero ni isa walang tumama 😂",
+  "Naku, ang yabang mo, pero hindi pa rin nasasagot ang tanong 🥷",
+  "Ang dami mong sinabi, pero mas malakas pa ang katahimikan ng iba 🙄",
+  "Hala, ang dami mong hugot, tapos wala namang sagot 💀",
+  "Naku, ang dami mong reaction, tapos ikaw rin pala ang naguguluhan 🥷🩸",
+  "Hala, ang drama mo, pero wala ka namang napatunayan 😂",
+  "Ang daming letra ng message mo, tapos ikaw rin pala ang naguguluhan 🤦",
+  "Naku, ang lakas ng trip mo, pero puro hangin lang 👀",
+  "Uy, ang dami mong energy, pero pang-intro pa lang yan 🤦",
+  "Oy, ang hilig mong mag-assume, pero hindi ka pa rin nakaka-convince 🙄",
+  "Ayan na naman, ang haba ng message mo, tapos wala namang sagot 🤦",
+  "Uy, ang dami mong sinabi, pero parang walang nakabasa 💀",
+  "Aba, ang lakas mong magmarunong, pero walang kasunod 🙄",
+  "Hala, ang dami mong sinabi, pero kulang pa rin sa sense 🥷🩸",
+  "Ang yabang mo, pero pang-intro pa lang yan 😂",
+  "Ay sus, ang dami mong energy, pero sayang lang ang oras namin 👀",
+  "Ay wow, ang ingay mo, pero parang loading pa rin ang point 🍿",
+  "Oy, ang dami mong banat, pero parang ikaw lang ang naniniwala 👀",
+  "Ayan na naman, ang yabang mo, pero hindi ka naman tinatanong 🥷",
+  "Ang drama mo, pero mas malakas pa ang katahimikan ng iba 😌",
+  "Ay wow, ang dami mong side comments, pero pang-intro pa lang yan 🙄",
+  "Ang hilig mong mag-assume, tapos ikaw pa ang unang napikon 😂",
+  "Ang lakas ng trip mo, pero ni isa walang tumama 👀",
+  "Ang tagal mong mag-isip, tapos wala namang nakinig 🍿",
+  "Sige, ang dami mong sinabi, pero hindi iyon sapat para manalo 🤡",
+  "Ang haba ng message mo, tapos wala pa ring bagong sinabi 😌",
+  "Oy, ang dami mong side comments, pero parang loading pa rin ang point 🍿",
+  "Ang yabang mo, pero hindi pa rin nasasagot ang tanong 🥷",
+  "Ang dami mong sinabi, pero wala pa ring direksyon 💀",
+  "Sige, ang dami mong sinabi, pero sayang lang ang oras namin 👀",
+  "Grabe, ang dami mong energy, pero parang loading pa rin ang point 🥷🩸",
+  "Seryoso, ang lakas mong magmarunong, pero ni isa walang tumama 🤦",
+  "Seryoso, ang dami mong paliwanag, pero walang nakakaintindi 😌",
+  "Teka, ang dami mong side comments, pero kulang pa rin sa sense 😌",
+  "Uy, ang dami mong alam, pero hindi ka naman tinatanong 🙄",
+  "Ayan na naman, ang bilis mong manghusga, pero wala pa ring direksyon 😌",
+  "Sige, ang ingay mo, pero parang loading pa rin ang point 🥷🩸",
+  "Ay wow, ang dami mong pasabog, pero walang nakakaintindi 🍿",
+  "Oy, ang dami mong plot twist, pero walang pumapansin 🤡",
+  "Teka, ang daming letra ng message mo, tapos wala pa ring bagong sinabi 👀",
+  "Ay sus, ang dami mong alam, tapos ikaw rin pala ang naguguluhan 🤦",
+  "Ang hilig mong sumingit, pero mas maingay pa kaysa sa malinaw 🍿",
+  "Hala, ang dami mong hugot, pero hindi ka naman tinatanong 🙄",
+  "Aba, ang dami mong plot twist, tapos wala namang sagot 🙄",
+  "Ay wow, ang dami mong plot twist, pero hindi ka naman tinatanong 💀",
+  "Ay sus, ang bilis mong mag-type, pero walang nakakaintindi 🥷🩸",
+  "Ang dami mong sinabi, pero ni isa walang tumama 🍿",
+  "Ang hilig mong sumingit, tapos ikaw pa ang unang napikon 😌",
+  "Sige, ang dami mong pa-cool, pero walang nakakaintindi 🥷🩸",
+  "Hala, ang dami mong pa-cool, pero ang labo pa rin ng punto mo 🤡",
+  "Uy, ang ingay mo, tapos wala ring kwenta sa huli 🙄",
+  "Ang aga mong mag-ingay, pero parang ikaw lang ang naniniwala 💀",
+  "Ang bilis mong mag-type, pero hindi ka pa rin nakaka-convince 😂",
+  "Sige, ang bilis mong manghusga, pero hindi ka pa rin nakaka-convince 🥷🩸",
+  "Ayan na naman, ang tagal mong mag-isip, pero walang nakakaintindi 🍿",
+  "Aba, ang drama mo, pero hindi ka pa rin nakaka-convince 🗿",
+  "Oy, ang haba ng message mo, pero wala ka namang napatunayan 😭",
+  "Ang dami mong paliwanag, pero wala pa ring direksyon 🍿",
+  "Ang lakas ng trip mo, pero walang kasunod 🙄",
+  "Hala, ang bilis mong mag-type, pero wala ka namang napatunayan 🥷",
+  "Hala, ang lakas ng trip mo, pero ang labo pa rin ng punto mo 😭",
+  "Aba, ang haba ng message mo, pero sayang lang ang oras namin 🥷",
+  "Sige, ang dami mong alam, pero wala ka namang napatunayan 😌",
+  "Grabe, ang dami mong reaction, tapos wala namang nakinig 👀",
+  "Hala, ang aga mong mag-ingay, pero hindi ka pa rin nakaka-convince 💀",
+  "Grabe, ang ingay mo, pero hindi iyon sapat para manalo 🗿",
+  "Ang lakas mong magmarunong, pero parang loading pa rin ang point 😂",
+  "Naku, ang dami mong reaction, tapos kami pa ang napagod 👀",
+  "Sige, ang hilig mong sumingit, pero ang labo pa rin ng punto mo 🤦",
+  "Ang dami mong pa-cool, pero parang ikaw lang ang naniniwala 🥷🩸",
+  "Hala, ang dami mong energy, pero sayang lang ang oras namin 🍿",
+  "Ang ingay mo, pero hindi pa rin nasasagot ang tanong 🤦",
+  "Hala, ang lakas mong magmarunong, pero ni isa walang tumama 🙄",
+  "Ang drama mo, pero walang kasunod 😌",
+  "Hala, ang dami mong side comments, tapos wala pa ring bagong sinabi 😂",
+  "Ayan na naman, ang dami mong sinabi, pero ang labo pa rin ng punto mo 🥷",
+  "Ang dami mong side comments, tapos wala pa ring bagong sinabi 🤡",
+  "Grabe, ang dami mong paliwanag, pero parang ikaw lang ang naniniwala 😭",
+  "Oy, ang dami mong side comments, tapos wala ring kwenta sa huli 🥷",
+  "Ay wow, ang dami mong pa-cool, pero pang-intro pa lang yan 😭",
+  "Oy, ang bilis mong manghusga, pero hindi ka naman tinatanong 💀",
+  "Teka, ang tagal mong mag-isip, pero hindi pa rin nasasagot ang tanong 😌",
+  "Ang daming letra ng message mo, pero wala pa ring direksyon 🤡",
+  "Oy, ang dami mong alam, pero ni isa walang tumama 🤦",
+  "Naku, ang aga mong mag-ingay, tapos wala ring kwenta sa huli 👀",
+  "Hala, ang dami mong sinabi, pero mas maingay pa kaysa sa malinaw 🍿",
+  "Hay nako, ang lakas mong magmarunong, pero parang walang nakabasa 🗿",
+  "Teka, ang daming letra ng message mo, tapos ikaw pa ang unang napikon 😂",
+  "Seryoso, ang bilis mong mag-type, tapos wala namang nakinig 💀",
+  "Seryoso, ang dami mong pa-cool, pero hindi ka pa rin nakaka-convince 🗿",
+  "Uy, ang dami mong side comments, pero hindi ka pa rin nakaka-convince 🤡",
+  "Ay sus, ang hilig mong sumingit, pero puro hangin lang 😌",
+  "Teka, ang bilis mong mag-type, tapos wala pa ring bagong sinabi 🤡",
+  "Ang dami mong pasabog, pero mas maingay pa kaysa sa malinaw 🥷🩸",
+  "Hay nako, ang bilis mong mag-type, pero puro hangin lang 🗿",
+  "Grabe, ang lakas ng trip mo, pero wala pa ring direksyon 😂",
+  "Ayan na naman, ang dami mong reaction, pero walang nakakaintindi 🙄",
+  "Hay nako, ang dami mong pasabog, pero walang nakakaintindi 🙄",
+  "Naku, ang drama mo, tapos ikaw pa ang unang napikon 😂",
+  "Ang dami mong banat, pero hindi iyon sapat para manalo 🍿",
+  "Hay nako, ang dami mong plot twist, pero walang kasunod 🙄",
+  "Sige, ang hilig mong sumingit, pero hindi iyon sapat para manalo 👀",
+  "Ay wow, ang dami mong hugot, pero wala ka namang napatunayan 😭",
+  "Naku, ang dami mong hugot, tapos ikaw rin pala ang naguguluhan 🗿",
+  "Aba, ang daming letra ng message mo, tapos wala namang nakinig 🥷🩸",
+  "Ang bilis mong manghusga, pero wala pa ring direksyon 👀",
+  "Ang dami mong sinabi, pero wala ka namang napatunayan 🥷🩸",
+  "Hala, ang aga mong mag-ingay, pero mas maingay pa kaysa sa malinaw 🗿",
+  "Ayan na naman, ang tagal mong mag-isip, pero kulang pa rin sa sense 🗿",
+  "Ang haba ng message mo, pero hindi ka naman tinatanong 💀",
+  "Aba, ang dami mong pa-cool, tapos wala pa ring bagong sinabi 😂",
+  "Ang dami mong paliwanag, pero wala ka namang napatunayan 👀",
+  "Hay nako, ang dami mong banat, pero wala namang laman 💀",
+  "Ang dami mong alam, pero hindi pa rin nasasagot ang tanong 😂",
+  "Grabe, ang lakas ng trip mo, pero pang-intro pa lang yan 🗿",
+  "Ang dami mong pa-cool, pero hindi ka naman tinatanong 🥷🩸",
+  "Ang daming letra ng message mo, pero parang loading pa rin ang point 👀",
+  "Hala, ang dami mong sinabi, pero ang labo pa rin ng punto mo 👀",
+  "Teka, ang yabang mo, pero ni isa walang tumama 😌",
+  "Ang hilig mong mag-assume, pero hindi ka pa rin nakaka-convince 🗿",
+  "Grabe, ang haba ng message mo, pero wala namang laman 😂",
+  "Oy, ang dami mong paliwanag, pero ang labo pa rin ng punto mo 😌",
+  "Aba, ang dami mong pasabog, pero hindi ka naman tinatanong 😭",
+  "Naku, ang bilis mong mag-type, tapos ikaw rin pala ang naguguluhan 😂",
+  "Sige, ang drama mo, tapos ikaw rin pala ang naguguluhan 💀",
+  "Aba, ang bilis mong mag-type, pero wala namang laman 🥷",
+  "Ang lakas mong magmarunong, pero wala ka namang napatunayan 👀",
+  "Ang dami mong paliwanag, pero pang-intro pa lang yan 💀",
+  "Hay nako, ang drama mo, pero sayang lang ang oras namin 🙄",
+  "Sige, ang bilis mong mag-type, tapos wala pa ring bagong sinabi 🗿",
+  "Ay sus, ang dami mong hugot, pero ni isa walang tumama 🤡",
+  "Naku, ang dami mong pasabog, pero puro hangin lang 🤡",
+  "Uy, ang lakas mong magmarunong, pero parang walang nakabasa 🤦",
+  "Oy, ang bilis mong mag-type, pero mas malakas pa ang katahimikan ng iba 🍿",
+  "Teka, ang ingay mo, tapos wala namang sagot 🙄",
+  "Seryoso, ang lakas mong magmarunong, pero hindi pa rin nasasagot ang tanong 🤦",
+  "Ang dami mong reaction, pero hindi pa rin nasasagot ang tanong 🗿",
+  "Naku, ang dami mong side comments, pero ni isa walang tumama 🙄",
+  "Ay wow, ang dami mong reaction, pero hindi ka naman tinatanong 👀",
+  "Naku, ang dami mong alam, pero walang kasunod 😌",
+  "Seryoso, ang bilis mong manghusga, pero wala pa ring direksyon 👀",
+  "Ang dami mong alam, pero mas malakas pa ang katahimikan ng iba 🗿",
+  "Aba, ang dami mong plot twist, pero parang ikaw lang ang naniniwala 😌",
+  "Ang hilig mong sumingit, tapos ikaw rin pala ang naguguluhan 😌",
+  "Ang dami mong side comments, pero wala namang laman 🤦",
+  "Ang dami mong alam, pero hindi pa rin nasasagot ang tanong 🗿",
+  "Ay sus, ang ingay mo, tapos wala namang sagot 🥷🩸",
+  "Ang haba ng message mo, pero wala ka namang napatunayan 🥷",
+  "Ang lakas mong magmarunong, pero mas malakas pa ang katahimikan ng iba 🙄",
+  "Ang lakas ng trip mo, pero hindi ka naman tinatanong 😂",
+  "Ang dami mong hugot, pero pang-intro pa lang yan 🙄",
+  "Ang dami mong energy, pero walang pumapansin 💀",
+  "Naku, ang drama mo, pero hindi ka naman tinatanong 🤦",
+  "Ang hilig mong mag-assume, pero hindi ka naman tinatanong 💀",
+  "Ang dami mong pasabog, pero wala namang laman 🤡",
+  "Naku, ang hilig mong mag-assume, pero mas malakas pa ang katahimikan ng iba 🍿",
+  "Hay nako, ang yabang mo, pero parang ikaw lang ang naniniwala 😂",
+  "Ang bilis mong mag-type, pero mas maingay pa kaysa sa malinaw 🗿",
+  "Ang haba ng message mo, pero ni isa walang tumama 🙄",
+  "Naku, ang tagal mong mag-isip, pero parang loading pa rin ang point 😌",
+  "Grabe, ang dami mong plot twist, pero wala namang laman 🤡",
+  "Ang dami mong plot twist, pero walang pumapansin 🗿",
+  "Sige, ang dami mong side comments, pero walang pumapansin 🥷🩸",
+  "Seryoso, ang bilis mong mag-type, pero parang walang nakabasa 🤦",
+  "Hay nako, ang ingay mo, pero hindi ka naman tinatanong 🥷🩸",
+  "Ay wow, ang haba ng message mo, pero puro hangin lang 😭",
+  "Aba, ang bilis mong manghusga, pero walang kasunod 💀",
+  "Ang lakas mong magmarunong, pero wala ka namang napatunayan 😌",
+  "Ang hilig mong sumingit, tapos wala namang nakinig 🥷",
+  "Hala, ang yabang mo, tapos wala namang sagot 🍿",
+  "Ay sus, ang dami mong reaction, pero hindi ka naman tinatanong 🗿",
+  "Ay sus, ang bilis mong manghusga, pero pang-intro pa lang yan 😌",
+  "Aba, ang aga mong mag-ingay, pero ang labo pa rin ng punto mo 😂",
+  "Grabe, ang dami mong side comments, tapos wala ring kwenta sa huli 🍿",
+  "Ay sus, ang aga mong mag-ingay, pero pang-intro pa lang yan 😭",
+  "Hay nako, ang yabang mo, pero parang ikaw lang ang naniniwala 😌",
+  "Ay wow, ang dami mong banat, tapos wala namang nakinig 🤦",
+  "Ay sus, ang dami mong reaction, pero hindi iyon sapat para manalo 🗿",
+  "Ang aga mong mag-ingay, pero hindi pa rin nasasagot ang tanong 🤡",
+  "Hay nako, ang yabang mo, tapos ikaw pa ang unang napikon 😭",
+  "Ang dami mong banat, tapos wala namang sagot 😂",
+  "Uy, ang hilig mong mag-assume, pero hindi ka pa rin nakaka-convince 😭",
+  "Seryoso, ang dami mong sinabi, pero parang ikaw lang ang naniniwala 😌",
+  "Sige, ang tagal mong mag-isip, tapos ikaw rin pala ang naguguluhan 😂",
+  "Ayan na naman, ang hilig mong mag-assume, pero walang kasunod 😌",
+  "Seryoso, ang daming letra ng message mo, pero mas malakas pa ang katahimikan ng iba 🥷🩸",
+  "Sige, ang hilig mong sumingit, tapos wala namang nakinig 🗿",
+  "Ang daming letra ng message mo, pero parang walang nakabasa 💀",
+  "Ang dami mong paliwanag, pero ni isa walang tumama 😂",
+  "Ang dami mong pa-cool, pero mas maingay pa kaysa sa malinaw 😭",
+  "Ayan na naman, ang yabang mo, pero puro hangin lang 😂",
+  "Aba, ang dami mong sinabi, pero parang ikaw lang ang naniniwala 💀",
+  "Teka, ang dami mong paliwanag, pero wala ka namang napatunayan 😂",
+  "Ang dami mong sinabi, pero walang nakakaintindi 🤦",
+  "Sige, ang aga mong mag-ingay, pero mas malakas pa ang katahimikan ng iba 🥷",
+  "Ay wow, ang dami mong banat, tapos wala namang nakinig 😂",
+  "Grabe, ang tagal mong mag-isip, tapos wala namang sagot 🤦",
+  "Hay nako, ang bilis mong mag-type, tapos wala ring kwenta sa huli 🗿",
+  "Hay nako, ang dami mong paliwanag, pero hindi iyon sapat para manalo 🗿",
+  "Ang dami mong paliwanag, tapos wala namang sagot 💀",
+  "Uy, ang dami mong side comments, pero hindi ka pa rin nakaka-convince 🤦",
+  "Teka, ang dami mong pasabog, tapos wala namang nakinig 🤦",
+  "Ay sus, ang bilis mong mag-type, pero ang labo pa rin ng punto mo 😌",
+  "Hala, ang drama mo, pero sayang lang ang oras namin 🥷🩸",
+  "Hay nako, ang dami mong side comments, tapos ikaw rin pala ang naguguluhan 😌",
+  "Hay nako, ang lakas mong magmarunong, pero ang labo pa rin ng punto mo 😂",
+  "Seryoso, ang lakas mong magmarunong, tapos wala namang nakinig 💀",
+  "Ay wow, ang dami mong banat, tapos wala pa ring bagong sinabi 🍿",
+  "Naku, ang dami mong pasabog, pero hindi pa rin nasasagot ang tanong 🗿",
+  "Ang dami mong sinabi, tapos ikaw pa ang unang napikon 😂",
+  "Ay sus, ang dami mong sinabi, tapos ikaw pa ang unang napikon 😭",
+  "Sige, ang daming letra ng message mo, pero walang pumapansin 🥷🩸",
+  "Seryoso, ang dami mong plot twist, tapos kami pa ang napagod 👀",
+  "Ay sus, ang ingay mo, pero walang kasunod 🤡",
+  "Hala, ang bilis mong manghusga, pero parang ikaw lang ang naniniwala 😌",
+  "Ay sus, ang lakas ng trip mo, tapos wala pa ring bagong sinabi 🤦",
+  "Ang dami mong alam, pero hindi ka pa rin nakaka-convince 🥷",
+  "Ay sus, ang dami mong plot twist, pero parang ikaw lang ang naniniwala 🗿",
+  "Ang bilis mong mag-type, pero wala pa ring direksyon 💀",
+  "Ang dami mong pasabog, pero hindi ka pa rin nakaka-convince 😭",
+  "Ang dami mong pa-cool, pero hindi pa rin nasasagot ang tanong 😂",
+  "Grabe, ang ingay mo, pero wala namang laman 😌",
+  "Ang dami mong alam, pero wala namang laman 🙄",
+  "Ang lakas ng trip mo, pero parang walang nakabasa 😭",
+  "Uy, ang dami mong alam, tapos wala namang nakinig 🙄",
+  "Grabe, ang aga mong mag-ingay, tapos wala namang sagot 🥷🩸",
+  "Ang hilig mong sumingit, pero ni isa walang tumama 😭",
+  "Sige, ang aga mong mag-ingay, pero ni isa walang tumama 🤦",
+  "Sige, ang lakas mong magmarunong, pero parang walang nakabasa 💀",
+  "Naku, ang lakas mong magmarunong, pero wala pa ring direksyon 💀",
+  "Ang dami mong energy, pero wala pa ring direksyon 🥷🩸",
+  "Aba, ang haba ng message mo, pero ang labo pa rin ng punto mo 😭",
+  "Hala, ang ingay mo, pero wala ka namang napatunayan 🍿",
+  "Ang dami mong pa-cool, tapos wala namang sagot 😭",
+  "Ang dami mong energy, pero kulang pa rin sa sense 🗿",
+  "Uy, ang dami mong alam, pero ni isa walang tumama 💀",
+  "Naku, ang aga mong mag-ingay, pero hindi ka naman tinatanong 👀",
+  "Aba, ang bilis mong mag-type, pero hindi iyon sapat para manalo 🙄",
+  "Teka, ang hilig mong mag-assume, pero walang nakakaintindi 💀",
+  "Grabe, ang dami mong paliwanag, pero ni isa walang tumama 😭",
+  "Sige, ang lakas mong magmarunong, pero ang labo pa rin ng punto mo 🥷",
+  "Oy, ang aga mong mag-ingay, pero wala namang laman 👀",
+  "Ayan na naman, ang dami mong side comments, pero sayang lang ang oras namin 🥷",
+  "Ang dami mong pasabog, tapos wala namang sagot 🥷🩸",
+  "Ayan na naman, ang dami mong reaction, pero puro hangin lang 💀",
+  "Sige, ang dami mong paliwanag, pero hindi ka naman tinatanong 👀",
+  "Ang daming letra ng message mo, pero hindi ka naman tinatanong 🥷",
+  "Ang hilig mong mag-assume, tapos wala ring kwenta sa huli 😌",
+  "Ang dami mong reaction, pero wala pa ring direksyon 😌",
+  "Teka, ang tagal mong mag-isip, pero hindi pa rin nasasagot ang tanong 💀",
+  "Ay wow, ang aga mong mag-ingay, tapos ikaw rin pala ang naguguluhan 🍿",
+  "Grabe, ang dami mong banat, pero hindi iyon sapat para manalo 👀",
+  "Ang yabang mo, pero parang ikaw lang ang naniniwala 💀",
+  "Oy, ang dami mong banat, pero walang kasunod 😂",
+  "Sige, ang dami mong plot twist, pero kulang pa rin sa sense 🙄",
+  "Ang dami mong reaction, pero puro hangin lang 🙄",
+  "Hala, ang ingay mo, tapos wala pa ring bagong sinabi 🤦",
+  "Grabe, ang lakas mong magmarunong, pero sayang lang ang oras namin 🤡",
+  "Grabe, ang dami mong pa-cool, pero walang pumapansin 😭",
+  "Hay nako, ang yabang mo, pero wala pa ring direksyon 🥷",
+  "Sige, ang drama mo, pero ni isa walang tumama 🤦",
+  "Ang dami mong plot twist, pero walang kasunod 🙄",
+  "Ang lakas ng trip mo, pero wala namang laman 🤡",
+  "Teka, ang drama mo, pero sayang lang ang oras namin 😂",
+  "Ay wow, ang bilis mong manghusga, pero mas malakas pa ang katahimikan ng iba 🤦",
+  "Naku, ang dami mong pasabog, tapos wala namang sagot 😂",
+  "Ayan na naman, ang dami mong hugot, pero hindi iyon sapat para manalo 🥷",
+  "Sige, ang yabang mo, pero hindi ka naman tinatanong 🤦",
+  "Ay wow, ang dami mong pa-cool, pero hindi ka naman tinatanong 🥷",
+  "Ang bilis mong mag-type, pero walang pumapansin 🥷🩸",
+  "Ay wow, ang dami mong side comments, pero hindi pa rin nasasagot ang tanong 🥷🩸",
+  "Ay sus, ang drama mo, pero walang pumapansin 😌",
+  "Hay nako, ang dami mong alam, pero wala pa ring direksyon 👀",
+  "Aba, ang dami mong sinabi, pero walang nakakaintindi 🤦",
+  "Ang dami mong paliwanag, tapos wala namang sagot 🤦",
+  "Ayan na naman, ang haba ng message mo, pero sayang lang ang oras namin 🤦",
+  "Ayan na naman, ang haba ng message mo, pero pang-intro pa lang yan 💀",
+  "Hala, ang dami mong alam, pero puro hangin lang 🤡",
+  "Teka, ang drama mo, pero pang-intro pa lang yan 👀",
+  "Ang dami mong paliwanag, pero hindi pa rin nasasagot ang tanong 🍿",
+  "Ay wow, ang haba ng message mo, pero walang nakakaintindi 🥷🩸",
+  "Ang yabang mo, pero kulang pa rin sa sense 👀",
+  "Ang bilis mong mag-type, pero hindi ka naman tinatanong 👀",
+  "Hala, ang ingay mo, pero mas malakas pa ang katahimikan ng iba 🤦",
+  "Ang haba ng message mo, pero parang ikaw lang ang naniniwala 🍿",
+  "Grabe, ang dami mong side comments, pero pang-intro pa lang yan 🤡",
+  "Ang dami mong plot twist, tapos wala pa ring bagong sinabi 🥷🩸",
+  "Hay nako, ang dami mong sinabi, tapos kami pa ang napagod 😭",
+  "Sige, ang yabang mo, tapos wala namang nakinig 🥷🩸",
+  "Ang tagal mong mag-isip, pero wala ka namang napatunayan 👀",
+  "Grabe, ang dami mong pasabog, pero hindi ka naman tinatanong 🤦",
+  "Grabe, ang bilis mong mag-type, pero kulang pa rin sa sense 🥷🩸",
+  "Sige, ang dami mong banat, pero walang kasunod 🤦",
+  "Oy, ang aga mong mag-ingay, pero wala pa ring direksyon 😭",
+  "Hay nako, ang lakas mong magmarunong, pero wala namang laman 👀",
+  "Hay nako, ang hilig mong mag-assume, pero kulang pa rin sa sense 🤡",
+  "Ay wow, ang dami mong hugot, tapos ikaw pa ang unang napikon 👀",
+  "Hay nako, ang dami mong reaction, pero walang pumapansin 🤡",
+  "Grabe, ang dami mong alam, pero ni isa walang tumama 🗿",
+  "Ay sus, ang tagal mong mag-isip, pero ang labo pa rin ng punto mo 😂",
+  "Hala, ang dami mong side comments, tapos wala namang nakinig 😂",
+  "Ayan na naman, ang dami mong energy, pero parang ikaw lang ang naniniwala 🤦",
+  "Ay sus, ang tagal mong mag-isip, pero sayang lang ang oras namin 😌",
+  "Ang drama mo, pero mas maingay pa kaysa sa malinaw 🥷🩸",
+  "Ay wow, ang dami mong pasabog, pero walang nakakaintindi 😂",
+  "Ay wow, ang hilig mong sumingit, pero ni isa walang tumama 😭",
+  "Ay sus, ang lakas mong magmarunong, pero wala ka namang napatunayan 🥷🩸",
+  "Uy, ang dami mong hugot, pero ni isa walang tumama 😂",
+  "Oy, ang dami mong sinabi, pero wala namang laman 🙄",
+  "Ay wow, ang dami mong energy, pero parang ikaw lang ang naniniwala 🤡",
+  "Ay wow, ang tagal mong mag-isip, pero mas maingay pa kaysa sa malinaw 🤡",
+  "Ang dami mong banat, pero wala ka namang napatunayan 😌",
+  "Hala, ang ingay mo, pero hindi pa rin nasasagot ang tanong 🗿",
+  "Ang drama mo, pero hindi iyon sapat para manalo 🥷",
+  "Ay wow, ang hilig mong sumingit, pero ang labo pa rin ng punto mo 🗿",
+  "Ang dami mong hugot, pero kulang pa rin sa sense 😭",
+  "Teka, ang bilis mong manghusga, tapos ikaw rin pala ang naguguluhan 🥷",
+  "Ang dami mong banat, pero ni isa walang tumama 🗿",
+  "Seryoso, ang drama mo, pero sayang lang ang oras namin 🤦",
+  "Ayan na naman, ang haba ng message mo, pero hindi ka naman tinatanong 😭",
+  "Ang dami mong alam, tapos kami pa ang napagod 🍿",
+  "Ayan na naman, ang dami mong paliwanag, pero walang kasunod 😭",
+  "Ang bilis mong mag-type, pero parang walang nakabasa 🍿",
+  "Grabe, ang bilis mong mag-type, pero puro hangin lang 😭",
+  "Ayan na naman, ang ingay mo, pero ang labo pa rin ng punto mo 😂",
+  "Naku, ang dami mong side comments, pero walang pumapansin 🙄",
+  "Ayan na naman, ang dami mong hugot, pero walang pumapansin 😭",
+  "Ay wow, ang dami mong pasabog, tapos wala namang nakinig 🥷",
+  "Ay sus, ang daming letra ng message mo, pero parang ikaw lang ang naniniwala 🥷🩸",
+  "Ang daming letra ng message mo, pero ni isa walang tumama 😌",
+  "Ay sus, ang dami mong paliwanag, tapos wala namang nakinig 🗿",
+  "Uy, ang dami mong sinabi, tapos ikaw rin pala ang naguguluhan 🤦",
+  "Ayan na naman, ang dami mong banat, pero ni isa walang tumama 😌",
+  "Hala, ang haba ng message mo, tapos wala ring kwenta sa huli 💀",
+  "Aba, ang tagal mong mag-isip, tapos wala namang sagot 🤡",
+  "Hay nako, ang lakas ng trip mo, pero pang-intro pa lang yan 🙄",
+  "Ay wow, ang lakas ng trip mo, pero walang pumapansin 😂",
+  "Aba, ang daming letra ng message mo, pero kulang pa rin sa sense 💀",
+  "Ang hilig mong mag-assume, tapos kami pa ang napagod 🙄",
+  "Ang dami mong plot twist, tapos wala namang sagot 🥷🩸",
+  "Hala, ang haba ng message mo, pero walang pumapansin 🤦",
+  "Naku, ang lakas mong magmarunong, pero wala pa ring direksyon 🍿",
+  "Naku, ang bilis mong manghusga, pero kulang pa rin sa sense 🥷",
+  "Oy, ang tagal mong mag-isip, pero ang labo pa rin ng punto mo 🥷🩸",
+  "Hala, ang dami mong banat, tapos kami pa ang napagod 🤡",
+  "Ayan na naman, ang haba ng message mo, pero mas malakas pa ang katahimikan ng iba 😂",
+  "Ang dami mong banat, pero walang kasunod 🥷",
+  "Aba, ang yabang mo, pero mas maingay pa kaysa sa malinaw 🥷",
+  "Ang aga mong mag-ingay, tapos wala ring kwenta sa huli 🥷",
+  "Ayan na naman, ang lakas mong magmarunong, pero wala pa ring direksyon 🥷🩸",
+  "Ang lakas mong magmarunong, tapos ikaw rin pala ang naguguluhan 🤦",
+  "Ang dami mong energy, pero mas malakas pa ang katahimikan ng iba 🙄",
+  "Hay nako, ang dami mong paliwanag, pero walang nakakaintindi 🙄",
+  "Naku, ang hilig mong sumingit, pero hindi iyon sapat para manalo 😂",
+  "Ang dami mong energy, pero hindi pa rin nasasagot ang tanong 🤦",
+  "Ang ingay mo, pero ni isa walang tumama 😂",
+  "Ay sus, ang lakas mong magmarunong, tapos wala pa ring bagong sinabi 👀",
+  "Ang dami mong banat, tapos wala ring kwenta sa huli 🍿",
+  "Ang ingay mo, pero hindi ka naman tinatanong 🥷🩸",
+  "Teka, ang haba ng message mo, tapos wala namang nakinig 👀",
+  "Oy, ang dami mong hugot, pero sayang lang ang oras namin 💀",
+  "Seryoso, ang tagal mong mag-isip, pero pang-intro pa lang yan 🤦",
+  "Naku, ang haba ng message mo, pero wala namang laman 💀",
+  "Ang dami mong sinabi, tapos kami pa ang napagod 🤦",
+  "Seryoso, ang lakas mong magmarunong, tapos wala ring kwenta sa huli 🤡",
+  "Ang hilig mong sumingit, pero parang loading pa rin ang point 👀",
+  "Teka, ang dami mong side comments, pero pang-intro pa lang yan 😂",
+  "Grabe, ang dami mong alam, pero ang labo pa rin ng punto mo 😭",
+  "Hala, ang hilig mong sumingit, tapos wala ring kwenta sa huli 🙄",
+  "Ang daming letra ng message mo, pero pang-intro pa lang yan 🙄",
+  "Hala, ang dami mong pa-cool, pero hindi iyon sapat para manalo 💀",
+  "Ang dami mong pa-cool, tapos wala pa ring bagong sinabi 🙄",
+  "Ang dami mong energy, tapos kami pa ang napagod 🙄",
+  "Seryoso, ang drama mo, pero ang labo pa rin ng punto mo 🤡",
+  "Hala, ang drama mo, pero parang loading pa rin ang point 😂",
+  "Oy, ang bilis mong manghusga, pero hindi pa rin nasasagot ang tanong 💀",
+  "Naku, ang dami mong hugot, pero hindi pa rin nasasagot ang tanong 🤡",
+  "Ay sus, ang dami mong banat, pero sayang lang ang oras namin 🍿",
+  "Aba, ang hilig mong sumingit, tapos wala pa ring bagong sinabi 👀",
+  "Naku, ang dami mong pasabog, tapos wala namang nakinig 🥷",
+  "Seryoso, ang bilis mong mag-type, pero hindi ka pa rin nakaka-convince 🤡",
+  "Seryoso, ang dami mong alam, tapos ikaw rin pala ang naguguluhan 💀",
+  "Sige, ang dami mong plot twist, tapos ikaw rin pala ang naguguluhan 🤦",
+  "Aba, ang aga mong mag-ingay, tapos wala namang nakinig 👀",
+  "Ang dami mong paliwanag, tapos kami pa ang napagod 🤦",
+  "Hay nako, ang bilis mong mag-type, tapos ikaw rin pala ang naguguluhan 😂",
+  "Ay wow, ang dami mong pa-cool, pero mas maingay pa kaysa sa malinaw 🍿",
+  "Ang dami mong pa-cool, tapos wala ring kwenta sa huli 😂",
+  "Uy, ang drama mo, pero ang labo pa rin ng punto mo 😌",
+  "Ang hilig mong mag-assume, pero parang ikaw lang ang naniniwala 🥷🩸",
+  "Ang aga mong mag-ingay, pero parang ikaw lang ang naniniwala 😌",
+  "Oy, ang lakas ng trip mo, pero wala pa ring direksyon 🥷🩸",
+  "Ang dami mong hugot, pero pang-intro pa lang yan 🗿",
+  "Ay sus, ang haba ng message mo, tapos wala pa ring bagong sinabi 🗿",
+  "Ang hilig mong mag-assume, pero hindi iyon sapat para manalo 🥷🩸",
+  "Seryoso, ang dami mong paliwanag, pero wala ka namang napatunayan 💀",
+  "Ang dami mong hugot, pero walang nakakaintindi 🤦",
+  "Oy, ang hilig mong mag-assume, pero parang walang nakabasa 👀",
+  "Ay wow, ang lakas ng trip mo, pero hindi ka pa rin nakaka-convince 💀",
+  "Ayan na naman, ang yabang mo, tapos ikaw pa ang unang napikon 🤡",
+  "Hala, ang daming letra ng message mo, pero walang pumapansin 😭",
+  "Hala, ang dami mong hugot, pero hindi iyon sapat para manalo 🤡",
+  "Seryoso, ang tagal mong mag-isip, pero hindi ka pa rin nakaka-convince 😭",
+  "Hala, ang dami mong reaction, pero mas malakas pa ang katahimikan ng iba 😂",
+  "Oy, ang dami mong alam, pero mas maingay pa kaysa sa malinaw 😂",
+  "Ay wow, ang dami mong hugot, tapos wala pa ring bagong sinabi 😌",
+  "Ay wow, ang dami mong alam, pero walang kasunod 💀",
+  "Ayan na naman, ang dami mong side comments, pero ni isa walang tumama 🍿",
+  "Naku, ang dami mong paliwanag, pero wala namang laman 🤦",
+  "Aba, ang hilig mong sumingit, pero parang walang nakabasa 🤡",
+  "Naku, ang aga mong mag-ingay, pero walang nakakaintindi 🍿",
+  "Ang dami mong pasabog, pero parang loading pa rin ang point 🍿",
+  "Sige, ang lakas ng trip mo, pero ang labo pa rin ng punto mo 😌",
+  "Naku, ang dami mong pa-cool, pero parang ikaw lang ang naniniwala 😭",
+  "Uy, ang yabang mo, pero wala namang laman 💀",
+  "Ang lakas ng trip mo, pero kulang pa rin sa sense 🥷",
+  "Oy, ang dami mong hugot, tapos wala namang nakinig 👀",
+  "Hay nako, ang hilig mong sumingit, pero parang loading pa rin ang point 🙄",
+  "Ang ingay mo, pero hindi ka naman tinatanong 🗿",
+  "Hala, ang hilig mong mag-assume, pero mas maingay pa kaysa sa malinaw 🥷🩸",
+  "Ang aga mong mag-ingay, pero puro hangin lang 🤡",
+  "Seryoso, ang dami mong alam, pero hindi ka naman tinatanong 🤦",
+  "Ayan na naman, ang dami mong pa-cool, tapos wala pa ring bagong sinabi 😌",
+  "Hay nako, ang aga mong mag-ingay, pero ang labo pa rin ng punto mo 🤡",
+  "Ang bilis mong mag-type, pero parang walang nakabasa 🤡",
+  "Aba, ang yabang mo, pero parang walang nakabasa 🍿",
+  "Ayan na naman, ang aga mong mag-ingay, pero hindi ka naman tinatanong 🥷🩸",
+  "Hala, ang dami mong pasabog, pero ni isa walang tumama 🤡",
+  "Ay sus, ang daming letra ng message mo, pero puro hangin lang 😭",
+  "Hay nako, ang drama mo, pero hindi iyon sapat para manalo 😭",
+  "Hala, ang dami mong energy, pero hindi iyon sapat para manalo 🥷🩸",
+  "Ang dami mong energy, pero hindi iyon sapat para manalo 🥷🩸",
+  "Sige, ang dami mong banat, pero parang walang nakabasa 🥷🩸",
+  "Sige, ang dami mong sinabi, pero pang-intro pa lang yan 🤡",
+  "Seryoso, ang dami mong plot twist, pero parang loading pa rin ang point 🤡",
+  "Hay nako, ang haba ng message mo, tapos wala namang nakinig 👀",
+  "Ayan na naman, ang haba ng message mo, pero walang pumapansin 👀",
+  "Grabe, ang ingay mo, tapos wala namang nakinig 🤦",
+  "Hay nako, ang dami mong pa-cool, pero walang pumapansin 🗿",
+  "Aba, ang dami mong banat, pero ang labo pa rin ng punto mo 💀",
+  "Ay wow, ang bilis mong mag-type, pero wala pa ring direksyon 🙄",
+  "Ang bilis mong mag-type, pero parang loading pa rin ang point 💀",
+  "Ang lakas mong magmarunong, pero mas malakas pa ang katahimikan ng iba 🥷",
+  "Ang tagal mong mag-isip, pero parang walang nakabasa 🗿",
+  "Aba, ang dami mong pasabog, tapos kami pa ang napagod 🤡",
+  "Naku, ang ingay mo, pero hindi pa rin nasasagot ang tanong 👀",
+  "Ang tagal mong mag-isip, pero pang-intro pa lang yan 🍿",
+  "Ang lakas ng trip mo, pero ang labo pa rin ng punto mo 🤡",
+  "Seryoso, ang lakas ng trip mo, pero parang walang nakabasa 🥷",
+  "Ang hilig mong mag-assume, pero parang walang nakabasa 🥷",
+  "Ay sus, ang dami mong side comments, tapos wala namang nakinig 😭",
+  "Sige, ang bilis mong manghusga, tapos wala pa ring bagong sinabi 🥷",
+  "Teka, ang drama mo, tapos wala pa ring bagong sinabi 🤡",
+  "Uy, ang ingay mo, tapos wala namang nakinig 👀",
+  "Ang lakas mong magmarunong, tapos ikaw rin pala ang naguguluhan 💀",
+  "Grabe, ang yabang mo, tapos wala namang nakinig 😌",
+  "Ay sus, ang dami mong energy, pero parang loading pa rin ang point 🤡",
+  "Hay nako, ang dami mong reaction, pero mas malakas pa ang katahimikan ng iba 💀",
+  "Seryoso, ang dami mong banat, tapos wala namang nakinig 🤦",
+  "Aba, ang dami mong side comments, pero pang-intro pa lang yan 🥷🩸",
+  "Hala, ang dami mong side comments, pero hindi ka pa rin nakaka-convince 💀",
+  "Uy, ang lakas mong magmarunong, tapos ikaw rin pala ang naguguluhan 💀",
+  "Uy, ang lakas mong magmarunong, pero hindi ka pa rin nakaka-convince 😌",
+  "Uy, ang ingay mo, pero pang-intro pa lang yan 🥷🩸",
+  "ang bigat ng sinabi mo… sa mata 👀",
+  "hindi ko pa rin gets, pero sige",
+  "nakakapagod ka basahin, ang totoo 🤡",
+  "tapos na ba yung speech mo? 🙄",
+  "kaya pala tahimik ang GC kanina 🥷🩸",
+  "kalma lang, wala namang nang-aaway",
+  "bumalik ka kapag may punto ka na 🙄",
+  "sinong nagtanong? wala naman",
+  "ang tagal ko nang naghihintay ng punto mo",
+  "nakakahiya naman para sa’yo 🍿",
+  "ayan, nag-ingay na naman",
+  "hindi ko alam kung seryoso ka o nagpapatawa 🙄",
+  "ang daming sinabi, wala pa ring sagot 🗿",
+  "anong ginagawa mo? nag-eexam ka ba ng pasensya namin?",
+  "puro ka type, wala namang dating 💀",
+  "may mas maayos pa bang sagot diyan? 🤡",
+  "nag-loading pa rin ang utak mo 🥷🩸",
+  "skip, next na",
+  "ulitin mo nga, mas nakakatawa kasi",
+  "Puro pagsingit sa usapan na lang ang alam mo 💀",
+  "Pagod na kaming makita ang pagsingit sa usapan mo 🤡",
+  "Paulit-ulit na lang ang pagsingit sa usapan mo 🤦",
+  "Wala nang bago sa pagiging defensive mo 💀",
+  "Ang corny na ng pagiging pa-deep mo 🥷",
+  "Tama na ang pagbibigay ng hindi hinihinging opinion, nakakasawa na 🥷",
+  "Pagod na kaming makita ang pag-angas mo 👀",
+  "Paulit-ulit na lang ang pag-uulit ng sinabi mo 😭",
+  "Wala nang bago sa pagiging overconfident mo 🥷🩸",
+  "Wala nang bago sa pagiging pa-deep mo 😂",
+  "Paulit-ulit na lang ang pag-drama mo 😂",
+  "Tama na ang pagsingit sa usapan, nakakasawa na 🙄",
+  "Wala nang bago sa pagbibigay ng hindi hinihinging opinion mo 😂",
+  "Wala nang bago sa pag-angas mo 🤦",
+  "Hanggang pag-drama ka na lang ba talaga? 😂",
+  "Paulit-ulit na lang ang pagiging defensive mo 😭",
+  "Paulit-ulit na lang ang pag-reply nang hindi nagbabasa mo 🙄",
+  "Paulit-ulit na lang ang pagiging pabida mo 😭",
+  "Pagod na kaming makita ang pagiging pa-deep mo 😂",
+  "Wala nang bago sa pagsingit sa usapan mo 💀",
+  "Wala nang bago sa pag-iwas sa tanong mo 🤦",
+  "Paulit-ulit na lang ang pagpapalusot mo 🥷",
+  "Tama na ang pag-angas, nakakasawa na 🤡",
+  "Puro pagbibigay ng hindi hinihinging opinion na lang ang alam mo 🥷",
+  "Wala nang bago sa pag-iiba ng topic mo 🤦",
+  "Puro pag-arte na lang ang alam mo 👀",
+  "Tama na ang pag-arte, nakakasawa na 😭",
+  "Pagod na kaming makita ang paghahanap ng away mo 🤦",
+  "Puro pagiging pa-deep na lang ang alam mo 🙄",
+  "Ang corny na ng paghahanap ng issue mo 😂",
+  "Puro pag-type ng mahaba na lang ang alam mo 😂",
+  "Hanggang pagbibigay ng hindi hinihinging opinion ka na lang ba talaga? 🗿",
+  "Ang corny na ng pag-iiba ng topic mo 💀",
+  "Tama na ang paghahanap ng away, nakakasawa na 🤡",
+  "Pagod na kaming makita ang pagiging overconfident mo 💀",
+  "Ang corny na ng pag-iwas sa tanong mo 👀",
+  "Puro paghahanap ng away na lang ang alam mo 🍿",
+  "Hanggang pagiging overconfident ka na lang ba talaga? 🤦",
+  "Hanggang pag-react agad ka na lang ba talaga? 😂",
+  "Paulit-ulit na lang ang paghahanap ng issue mo 😭",
+  "Hanggang paghahanap ng away ka na lang ba talaga? 😭",
+  "Tama na ang pag-reply nang hindi nagbabasa, nakakasawa na 🍿",
+  "Paulit-ulit na lang ang pagiging pa-deep mo 🥷",
+  "Paulit-ulit na lang ang pag-iwas sa tanong mo 🍿",
+  "Pagod na kaming makita ang pag-arte mo 🗿",
+  "Wala nang bago sa pag-reply nang hindi nagbabasa mo 🙄",
+  "Pagod na kaming makita ang pag-react agad mo 💀",
+  "Wala nang bago sa paghahanap ng away mo 🗿",
+  "Paulit-ulit na lang ang pagiging overconfident mo 😭",
+  "Wala nang bago sa pagbibida mo 💀",
+  "Ang corny na ng pag-reply nang hindi nagbabasa mo 😭",
+  "Hanggang pagpapahaba ng usapan ka na lang ba talaga? 🗿",
+  "Tama na ang paghahanap ng issue, nakakasawa na 🥷",
+  "Paulit-ulit na lang ang pag-arte mo 😭",
+  "Ang corny na ng pag-react agad mo 🤦",
+  "Hanggang pagmamarunong ka na lang ba talaga? 🤡",
+  "Hanggang pag-angas ka na lang ba talaga? 😂",
+  "Tama na ang pagiging overconfident, nakakasawa na 🤡",
+  "Wala nang bago sa pag-arte mo 🤦",
+  "Puro pag-angas na lang ang alam mo 🥷",
+  "Pagod na kaming makita ang pag-reply nang hindi nagbabasa mo 🙄",
+  "Ang corny na ng pagpapalusot mo 🤦",
+  "Ang corny na ng pag-drama mo 💀",
+  "Hanggang pag-type ng mahaba ka na lang ba talaga? 💀",
+  "Pagod na kaming makita ang pagpapalusot mo 😭",
+  "Pagod na kaming makita ang paghahanap ng issue mo 🙄",
+  "Puro pag-react agad na lang ang alam mo 🗿",
+  "Hanggang pagsingit sa usapan ka na lang ba talaga? 🙄",
+  "Pagod na kaming makita ang pagpapahaba ng usapan mo 💀",
+  "Wala nang bago sa pag-type ng mahaba mo 🥷",
+  "Tama na ang pag-react agad, nakakasawa na 🍿",
+  "Ang corny na ng pagpapahaba ng usapan mo 🥷🩸",
+  "Paulit-ulit na lang ang pagbibigay ng hindi hinihinging opinion mo 🙄",
+  "Puro pag-uulit ng sinabi na lang ang alam mo 😂",
+  "Paulit-ulit na lang ang paghahanap ng away mo 👀",
+  "Paulit-ulit na lang ang pagmamarunong mo 👀",
+  "Pagod na kaming makita ang pag-uulit ng sinabi mo 🍿",
+  "Pagod na kaming makita ang pag-type ng mahaba mo 🥷🩸",
+  "Ang corny na ng pagmamarunong mo 🥷🩸",
+  "Ang corny na ng pagiging pabida mo 🍿",
+  "Hanggang pag-iwas sa tanong ka na lang ba talaga? 😂",
+  "Paulit-ulit na lang ang pagbibida mo 🗿",
+  "Puro pag-iiba ng topic na lang ang alam mo 😂",
+  "Wala nang bago sa pagpapahaba ng usapan mo 🗿",
+  "Ang corny na ng pagiging defensive mo 🤦",
+  "Wala nang bago sa pagmamarunong mo 🙄",
+  "Wala nang bago sa pag-drama mo 🥷🩸",
+  "Paulit-ulit na lang ang pag-type ng mahaba mo 🗿",
+  "Puro pag-reply nang hindi nagbabasa na lang ang alam mo 💀",
+  "Ang corny na ng pagiging maingay mo 🥷🩸",
+  "Tama na ang pag-drama, nakakasawa na 😂",
+  "Pagod na kaming makita ang pagiging defensive mo 🤦",
+  "Tama na ang pagbibida, nakakasawa na 🤦",
+  "Puro pagiging maingay na lang ang alam mo 🤡",
+  "Ang corny na ng pag-angas mo 🤦",
+  "Tama na ang pag-iiba ng topic, nakakasawa na 🤦",
+  "Pagod na kaming makita ang pagbibigay ng hindi hinihinging opinion mo 👀",
+  "Pagod na kaming makita ang pagbibida mo 👀",
+  "Paulit-ulit na lang ang pagiging maingay mo 🤦",
+  "Tama na ang pag-iwas sa tanong, nakakasawa na 🗿",
+  "Tama na ang pagpapalusot, nakakasawa na 🥷🩸",
+  "Ang corny na ng pagiging overconfident mo 🙄",
+  "Tama na ang pagiging pabida, nakakasawa na 🙄",
+  "Pagod na kaming makita ang pag-iwas sa tanong mo 👀",
+  "Ang corny na ng pagbibida mo 🤦",
+  "Hanggang pagbibida ka na lang ba talaga? 🥷🩸",
+  "Puro pagbibida na lang ang alam mo 🤡",
+  "Tama na ang pagiging defensive, nakakasawa na 👀",
+  "Hanggang pag-arte ka na lang ba talaga? 🥷🩸",
+  "Puro pag-iwas sa tanong na lang ang alam mo 🥷",
+  "Hanggang pagiging defensive ka na lang ba talaga? 👀",
+  "Tama na ang pagmamarunong, nakakasawa na 🤦",
+  "Paulit-ulit na lang ang pag-angas mo 🥷",
+  "Wala nang bago sa pagpapalusot mo 🤡",
+  "Tama na ang pag-type ng mahaba, nakakasawa na 🙄",
+  "Wala nang bago sa pagiging pabida mo 🍿",
+  "Hanggang pag-iiba ng topic ka na lang ba talaga? 🤡",
+  "Hanggang pagiging pa-deep ka na lang ba talaga? 🤡",
+  "Ang corny na ng pagsingit sa usapan mo 🍿",
+  "Tama na ang pagiging pa-deep, nakakasawa na 🥷🩸",
+  "Pagod na kaming makita ang pagiging maingay mo 💀",
+  "Ang corny na ng pag-arte mo 🍿",
+  "Hanggang pag-reply nang hindi nagbabasa ka na lang ba talaga? 😂",
+  "Hanggang pagiging maingay ka na lang ba talaga? 🤦",
+  "Tama na ang pagiging maingay, nakakasawa na 💀",
+  "Paulit-ulit na lang ang pag-react agad mo 🤡",
+  "Wala nang bago sa pagiging maingay mo 🤡",
+  "Puro pag-drama na lang ang alam mo 🥷",
+  "Puro pagiging overconfident na lang ang alam mo 😭",
+  "Puro pagpapahaba ng usapan na lang ang alam mo 🤡",
+  "Wala nang bago sa pag-react agad mo 😂",
+  "Puro pagiging defensive na lang ang alam mo 🗿",
+  "Puro pagpapalusot na lang ang alam mo 🗿",
+  "Pagod na kaming makita ang pag-drama mo 🙄",
+  "Puro pagiging pabida na lang ang alam mo 🙄",
+  "Paulit-ulit na lang ang pagpapahaba ng usapan mo 😂",
+  "Pagod na kaming makita ang pagmamarunong mo 🗿",
+  "Ang corny na ng pag-type ng mahaba mo 🗿",
+  "Wala nang bago sa paghahanap ng issue mo 💀",
+  "Hanggang pagpapalusot ka na lang ba talaga? 🤦",
+  "Naku, ang daming letra ng message mo, pero parang loading pa rin ang point 🍿",
+  "Aba, ang dami mong drama, pero wala pa ring direksyon 🗿",
+  "Oy, ang lakas mong magmarunong, pero mas maingay pa kaysa sa malinaw 🤡",
+  "Hala, ang dami mong banat, tapos wala ring kwenta sa huli 🍿",
+  "Oy, ang hilig mong umiwas sa tanong, pero walang kasunod 😂",
+  "Hala, ang bagal mong umintindi, pero wala pa ring direksyon 👀",
+  "Seryoso, ang dami mong side comments, pero mas maingay pa kaysa sa malinaw 💀",
+  "Seryoso, ang daming letra ng message mo, pero walang pumapansin 💀",
+  "Naku, ang pilit mo, pero kulang pa rin sa sense 😭",
+  "Naku, ang dami mong pa-cool, pero hindi pa rin nasasagot ang tanong 👀",
+  "Uy, ang bilis mong manghusga, pero parang walang nakabasa 🥷",
+  "Teka, ang bilis mong mag-type, tapos ikaw rin pala ang naguguluhan 😭",
+  "Naku, ang labo mo, tapos wala pa ring bagong sinabi 🤦",
+  "Aba, ang haba ng message mo, tapos wala namang sagot 🤦",
+  "Ayan na naman, ang kulit mo, pero parang loading pa rin ang point 💀",
+  "Ayan na naman, ang lakas mong magmarunong, pero wala namang laman 💀",
+  "Hala, ang kapal ng mukha mo, pero sayang lang ang oras namin 👀",
+  "Naku, ang hilig mong mang-asar, pero parang ikaw lang ang naniniwala 🗿",
+  "Oy, ang bagal mong umintindi, pero puro hangin lang 🥷🩸",
+  "Oy, ang dami mong plot twist, tapos wala pa ring bagong sinabi 🥷🩸",
+  "Ayan na naman, ang kulit mo, pero walang kasunod 🤦",
+  "Ang dami mong drama, pero kulang pa rin sa sense 🙄",
+  "Ang dami mong paliwanag, pero parang ikaw lang ang naniniwala 👀",
+  "Hay nako, ang kapal ng mukha mo, pero sayang lang ang oras namin 🙄",
+  "Oy, ang gulo mo, tapos wala pa ring bagong sinabi 🥷🩸",
+  "Seryoso, ang hilig mong umiwas sa tanong, tapos ikaw pa ang unang napikon 🤦",
+  "Naku, ang dami mong sinabi, pero hindi ka naman tinatanong 🙄",
+  "Naku, ang hilig mong umiwas sa tanong, pero sayang lang ang oras namin 🗿",
+  "Sige, ang dami mong reaction, tapos kami pa ang napagod 🍿",
+  "Uy, ang dami mong plot twist, pero kulang pa rin sa sense 💀",
+  "Grabe, ang hilig mong magpa-impress, pero wala ka namang napatunayan 🤡",
+  "Ang tagal mong mag-isip, pero sayang lang ang oras namin 🤡",
+  "Seryoso, ang dami mong palusot, pero mas malakas pa ang katahimikan ng iba 👀",
+  "Ay sus, ang ingay mo, pero walang nakakaintindi 😭",
+  "Oy, ang dami mong sinabi, pero parang walang nakabasa 😂",
+  "Hala, ang lakas mong magmarunong, pero puro hangin lang 💀",
+  "Ay sus, ang lakas mong magmarunong, pero wala ka namang napatunayan 😂",
+  "Naku, ang dami mong sinabi, tapos wala ring kwenta sa huli 👀",
+  "Ay sus, ang hirap mong intindihin, pero pang-intro pa lang yan 👀",
+  "Naku, ang hilig mong magpa-impress, pero kulang pa rin sa sense 🗿",
+  "Naku, ang dami mong reaction, pero walang pumapansin 🥷",
+  "Hala, ang kulit mo, pero walang nakakaintindi 🥷",
+  "Hala, ang dami mong plot twist, tapos wala namang nakinig 🍿",
+  "Hay nako, ang hilig mong mang-asar, tapos wala pa ring bagong sinabi 💀",
+  "Hay nako, ang lakas mong magmarunong, pero puro hangin lang 🙄",
+  "Uy, ang hilig mong mang-asar, pero walang nakakaintindi 🥷",
+  "Seryoso, ang hilig mong mang-asar, pero puro hangin lang 🥷",
+  "Uy, ang dami mong drama, pero hindi ka pa rin nakaka-convince 🤡",
+  "Ang dami mong pa-cool, pero hindi ka naman tinatanong 👀",
+  "Oy, ang bilis mong manghusga, pero wala namang laman 🥷",
+  "Hay nako, ang dami mong side comments, pero ni isa walang tumama 🥷🩸",
+  "Aba, ang bilis mong manghusga, pero sayang lang ang oras namin 👀",
+  "Teka, ang yabang mo, pero hindi ka pa rin nakaka-convince 🤦",
+  "Ang dami mong palusot, pero puro hangin lang 🤦",
+  "Teka, ang kulit mo, tapos wala namang nakinig 😭",
+  "Ang lakas mong magmarunong, pero pang-intro pa lang yan 🗿",
+  "Ay sus, ang dami mong hugot, pero walang pumapansin 💀",
+  "Hay nako, ang labo mo, pero hindi iyon sapat para manalo 👀",
+  "Hay nako, ang dami mong paliwanag, pero pang-intro pa lang yan 😂",
+  "Naku, ang dami mong sinabi, pero hindi ka pa rin nakaka-convince 🤡",
+  "Grabe, ang dami mong hugot, pero hindi ka naman tinatanong 🥷",
+  "Grabe, ang ingay mo, pero hindi ka naman tinatanong 🙄",
+  "Ayan na naman, ang ingay mo, pero walang pumapansin 🤡",
+  "Aba, ang hirap mong intindihin, pero ni isa walang tumama 🤡",
+  "Ayan na naman, ang corny mo, pero wala ka namang napatunayan 🤦",
+  "Oy, ang pilit mo, pero parang walang nakabasa 🍿",
+  "Ang gulo mo, tapos ikaw pa ang unang napikon 👀",
+  "Ayan na naman, ang haba ng message mo, pero parang walang nakabasa 🗿",
+  "Aba, ang aga mong mag-ingay, tapos ikaw pa ang unang napikon 🗿",
+  "Hala, ang hilig mong sumingit, tapos wala namang sagot 😭",
+  "Ayan na naman, ang dami mong paliwanag, pero wala pa ring direksyon 🗿",
+  "Uy, ang labo mo, pero hindi ka pa rin nakaka-convince 🥷",
+  "Oy, ang daming letra ng message mo, pero mas maingay pa kaysa sa malinaw 🙄",
+  "Ayan na naman, ang pilit mo, pero kulang pa rin sa sense 🤡",
+  "Naku, ang corny mo, pero ang labo pa rin ng punto mo 🙄",
+  "Uy, ang bagal mong umintindi, pero wala namang laman 🗿",
+  "Ang dami mong side comments, pero wala pa ring direksyon 🤡",
+  "Teka, ang haba ng message mo, pero sayang lang ang oras namin 🍿",
+  "Hala, ang dami mong reaction, pero puro hangin lang 🍿",
+  "Aba, ang dami mong hugot, pero parang ikaw lang ang naniniwala 👀",
+  "Sige, ang kulit mo, pero hindi iyon sapat para manalo 💀",
+  "Ay sus, ang dami mong banat, pero walang nakakaintindi 🙄",
+  "Ayan na naman, ang labo mo, tapos wala ring kwenta sa huli 🤡",
+  "Uy, ang hilig mong umiwas sa tanong, pero parang walang nakabasa 🗿",
+  "Ay sus, ang lakas mong magmarunong, pero hindi pa rin nasasagot ang tanong 💀",
+  "Hala, ang dami mong pa-cool, tapos ikaw rin pala ang naguguluhan 👀",
+  "Grabe, ang dami mong pa-cool, tapos wala ring kwenta sa huli 😭",
+  "Hay nako, ang dami mong side comments, pero mas malakas pa ang katahimikan ng iba 💀",
+  "Ay sus, ang ingay mo, pero parang loading pa rin ang point 🙄",
+  "Naku, ang hirap mong intindihin, tapos ikaw pa ang unang napikon 👀",
+  "Aba, ang kapal ng mukha mo, pero sayang lang ang oras namin 😂",
+  "Ang aga mong mag-ingay, pero hindi iyon sapat para manalo 🤡",
+  "Ay sus, ang dami mong drama, tapos kami pa ang napagod 🥷🩸",
+  "Hala, ang dami mong hugot, pero parang loading pa rin ang point 😭",
+  "Aba, ang dami mong hugot, pero mas malakas pa ang katahimikan ng iba 😂",
+  "Ang dami mong banat, pero ang labo pa rin ng punto mo 😭",
+  "Hala, ang haba ng message mo, pero wala pa ring direksyon 🙄",
+  "Hay nako, ang yabang mo, pero wala ka namang napatunayan 🗿",
+  "Seryoso, ang hilig mong mang-asar, pero walang kasunod 🙄",
+  "Seryoso, ang dami mong hugot, pero parang walang nakabasa 🙄",
+  "Ayan na naman, ang ingay mo, tapos ikaw rin pala ang naguguluhan 🤦",
+  "Grabe, ang lakas mong magmarunong, tapos ikaw rin pala ang naguguluhan 🥷🩸",
+  "Hala, ang kapal ng mukha mo, pero hindi ka naman tinatanong 💀",
+  "Ang dami mong palusot, tapos wala ring kwenta sa huli 🥷🩸",
+  "Seryoso, ang bilis mong mag-type, pero parang ikaw lang ang naniniwala 🥷🩸",
+  "Naku, ang hilig mong mag-assume, pero hindi pa rin nasasagot ang tanong 🥷",
+  "Ang dami mong plot twist, pero mas malakas pa ang katahimikan ng iba 😂",
+  "Hala, ang dami mong drama, tapos ikaw rin pala ang naguguluhan 🥷",
+  "Aba, ang aga mong mag-ingay, tapos wala namang nakinig 🗿",
+  "Teka, ang kulit mo, tapos wala namang nakinig 😂",
+  "Oy, ang labo mo, pero hindi iyon sapat para manalo 🙄",
+  "Ayan na naman, ang lakas mong magmarunong, pero walang pumapansin 🥷🩸",
+  "Ayan na naman, ang dami mong drama, pero walang pumapansin 🗿",
+  "Uy, ang pilit mo, tapos wala pa ring bagong sinabi 😭",
+  "Sige, ang daming letra ng message mo, tapos wala namang sagot 🤦",
+  "Ang dami mong sinabi, pero wala pa ring direksyon 😭",
+  "Grabe, ang kapal ng mukha mo, pero puro hangin lang 🤦",
+  "Ayan na naman, ang hilig mong magpa-impress, pero puro hangin lang 🍿",
+  "Oy, ang hilig mong magpa-impress, pero parang loading pa rin ang point 💀",
+  "Hala, ang dami mong banat, pero kulang pa rin sa sense 🍿",
+  "Hay nako, ang ingay mo, pero walang nakakaintindi 💀",
+  "Sige, ang hilig mong mag-assume, pero parang loading pa rin ang point 💀",
+  "Seryoso, ang dami mong banat, pero ang labo pa rin ng punto mo 🗿",
+  "Hala, ang haba ng message mo, pero walang pumapansin 💀",
+  "Uy, ang dami mong palusot, pero mas malakas pa ang katahimikan ng iba 😂",
+  "Uy, ang bilis mong manghusga, pero parang ikaw lang ang naniniwala 🗿",
+  "Naku, ang tagal mong mag-isip, tapos wala ring kwenta sa huli 💀",
+  "Grabe, ang hilig mong mang-asar, pero ni isa walang tumama 🤦",
+  "Uy, ang pilit mo, pero hindi iyon sapat para manalo 😭",
+  "Hay nako, ang labo mo, pero wala namang laman 😭",
+  "Seryoso, ang hilig mong mang-asar, tapos ikaw rin pala ang naguguluhan 💀",
+  "Oy, ang hilig mong umiwas sa tanong, pero wala ka namang napatunayan 😂",
+  "Ay sus, ang dami mong banat, pero walang kasunod 🍿",
+  "Oy, ang lakas mong magmarunong, pero hindi pa rin nasasagot ang tanong 💀",
+  "Oy, ang kulit mo, pero sayang lang ang oras namin 🙄",
+  "Teka, ang dami mong drama, pero kulang pa rin sa sense 🥷",
+  "Oy, ang hilig mong magpa-impress, tapos wala pa ring bagong sinabi 🤦",
+  "Ay sus, ang gulo mo, pero kulang pa rin sa sense 👀",
+  "Ay sus, ang hilig mong mag-assume, pero hindi pa rin nasasagot ang tanong 😂",
+  "Hay nako, ang kapal ng mukha mo, tapos ikaw rin pala ang naguguluhan 😭",
+  "Aba, ang dami mong plot twist, pero mas malakas pa ang katahimikan ng iba 🥷",
+  "Uy, ang haba ng message mo, pero parang walang nakabasa 🤦",
+  "Hala, ang dami mong plot twist, tapos ikaw rin pala ang naguguluhan 🥷🩸",
+  "Ang bilis mong mag-type, pero ang labo pa rin ng punto mo 👀",
+  "Seryoso, ang kapal ng mukha mo, pero walang nakakaintindi 😂",
+  "Ang yabang mo, pero walang nakakaintindi 🥷"
 ];
 
-// Tanggalin ang duplicates at blangko.
-const ROASTS = [...new Set(RAW_ROASTS.map(r => r.trim()).filter(Boolean))];
+const threadBags = new Map();   // threadID -> shuffled roasts (walang ulit hanggang maubos)
+const threadLast = new Map();   // threadID -> timestamp ng huling reply
 
-/* ------------------------------------------------------------------ */
-/* Persistent on/off state                                             */
-/* ------------------------------------------------------------------ */
+function shuffled(items) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function nextRoast(threadID) {
+  let bag = threadBags.get(threadID);
+  if (!bag || bag.length === 0) {
+    bag = shuffled(ROASTS);
+    threadBags.set(threadID, bag);
+  }
+  return bag.pop();
+}
+
+/* ---------------- ON/OFF storage ---------------- */
 
 function loadData() {
   try {
     const raw = JSON.parse(fs.readFileSync(DATA_PATH, "utf8"));
-    return {
-      threads: raw && typeof raw.threads === "object" && raw.threads ? raw.threads : {},
-      speed: SPEED_PRESETS[raw && raw.speed] ? raw.speed : "normal"
-    };
+    return { threads: raw && typeof raw.threads === "object" && raw.threads ? raw.threads : {} };
   } catch (e) {
-    return { threads: {}, speed: "normal" };
+    return { threads: {} };
   }
 }
 
 const data = loadData();
 
-function saveData() {
+function setEnabled(threadID, value) {
+  data.threads[String(threadID)] = value;
   try {
     fs.writeFileSync(DATA_PATH, JSON.stringify(data, null, 2));
   } catch (e) {
@@ -466,113 +1092,18 @@ function isEnabled(threadID) {
   return data.threads[String(threadID)] === true;
 }
 
-function setEnabled(threadID, value) {
-  data.threads[String(threadID)] = value;
-  saveData();
-}
-
-/* ------------------------------------------------------------------ */
-/* Roast picker (shuffle bag + recent history + TTL cleanup)           */
-/* ------------------------------------------------------------------ */
-
-const THREAD_STATE = new Map();
-
-function shuffled(items) {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
-}
-
-function cleanupStates(now) {
-  for (const [id, s] of THREAD_STATE) {
-    if (now - s.touched > TTL_MS) THREAD_STATE.delete(id);
-  }
-  while (THREAD_STATE.size > MAX_BAGS) {
-    let oldestId = null;
-    let oldest = Infinity;
-    for (const [id, s] of THREAD_STATE) {
-      if (s.touched < oldest) {
-        oldest = s.touched;
-        oldestId = id;
-      }
-    }
-    if (oldestId === null) break;
-    THREAD_STATE.delete(oldestId);
-  }
-}
-
-function getState(threadID) {
-  const now = Date.now();
-  cleanupStates(now);
-  const key = String(threadID);
-  let state = THREAD_STATE.get(key);
-  if (!state) {
-    state = { bag: [], recent: [], lastReplyAt: 0, touched: now };
-    THREAD_STATE.set(key, state);
-  }
-  state.touched = now;
-  return state;
-}
-
-function nextRoast(state) {
-  if (state.bag.length === 0) {
-    const fresh = ROASTS.filter(r => !state.recent.includes(r));
-    state.bag = shuffled(fresh.length ? fresh : ROASTS);
-  }
-  const roast = state.bag.pop();
-  state.recent.push(roast);
-  while (state.recent.length > MAX_RECENT) state.recent.shift();
-  return roast;
-}
-
-/* ------------------------------------------------------------------ */
-/* Shorthands + human-like delay                                       */
-/* ------------------------------------------------------------------ */
-
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-const SHORTHAND_RULES = Object.values(BANAT_SHORTHANDS)
-  .flat()
-  .map(([from, to]) => [new RegExp("\\b" + escapeRegex(from) + "\\b", "gi"), to]);
-
-function applyShorthands(text) {
-  if (Math.random() > SHORTHAND_CHANCE) return text;
-  let out = text;
-  for (const [re, to] of SHORTHAND_RULES) out = out.replace(re, to);
-  return out;
-}
+/* ---------------- Helpers ---------------- */
 
 function randomBetween(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-function replyDelay(text) {
-  const preset = SPEED_PRESETS[data.speed] || SPEED_PRESETS.normal;
-  const jitter = randomBetween(preset.min, preset.max);
-  const typing = String(text).length * preset.typingPerChar;
-  return Math.min(BANAT_MAX_HUMAN_DELAY_MS, BANAT_REPLY_DELAY_MS + jitter + typing);
+  return Math.floor(min + Math.random() * (max - min));
 }
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
-
-const HAHA_REGEX = new RegExp("\\b" + escapeRegex(HAHA_REACT) + "+\\b", "i");
-
-const REACT_FALLBACK = "👍";
-
 function tryReact(api, emoji, messageID, force) {
   return new Promise(resolve => {
-    // Kung walang callback na tinawag ang API, ituring na tapos pagkatapos ng 4s.
     const timer = setTimeout(() => resolve(null), 4000);
     try {
       api.setMessageReaction(
@@ -592,98 +1123,87 @@ function tryReact(api, emoji, messageID, force) {
 }
 
 async function react(api, emoji, messageID) {
-  if (!messageID) {
-    console.error("[HALIMAW] Walang messageID, hindi makakapag-react.");
+  if (!messageID || typeof api.setMessageReaction !== "function") {
+    console.error("[HALIMAW] Hindi makakapag-react (walang messageID o setMessageReaction).");
     return;
   }
-  if (typeof api.setMessageReaction !== "function") {
-    console.error("[HALIMAW] Walang api.setMessageReaction sa FCA na gamit mo.");
-    return;
-  }
-
   let err = await tryReact(api, emoji, messageID, true);
   if (err) err = await tryReact(api, emoji, messageID, false);
-  if (err && emoji !== REACT_FALLBACK) {
-    err = await tryReact(api, REACT_FALLBACK, messageID, true);
-  }
+  if (err && emoji !== "👍") err = await tryReact(api, "👍", messageID, true);
   if (err) console.error("[HALIMAW] Reaction error:", err);
 }
 
-function isTriggered(lowerBody) {
-  if (!TRIGGER_WORDS.length) return true;
-  return TRIGGER_WORDS.some(word => lowerBody.includes(word));
+function startTyping(api, threadID) {
+  try {
+    if (typeof api.sendTypingIndicator === "function") {
+      const stop = api.sendTypingIndicator(threadID, () => {});
+      return typeof stop === "function" ? stop : null;
+    }
+  } catch (e) {}
+  return null;
 }
 
-/* ------------------------------------------------------------------ */
-/* Event handler                                                       */
-/* ------------------------------------------------------------------ */
+/* ---------------- Event handler ---------------- */
 
 module.exports.handleEvent = async function ({ api, event }) {
-  const threadID = event.threadID;
-  const messageID = event.messageID;
+  const { threadID, messageID, senderID } = event;
   const body = String(event.body || "").trim();
-
   if (!body) return;
 
-  const isSelf =
-    event.senderID &&
-    typeof api.getCurrentUserID === "function" &&
-    String(event.senderID) === String(api.getCurrentUserID());
+  // GC lang: ignore ang PM (kasama ang dot commands).
+  if (GC_ONLY && event.isGroup === false) return;
 
-  // ---- Controls: "." ON | ".." OFF | "..." STATUS ----
+  const isSelf =
+    senderID &&
+    typeof api.getCurrentUserID === "function" &&
+    String(senderID) === String(api.getCurrentUserID());
+
+  // ---- Dot commands ----
   if (body === ".") {
     setEnabled(threadID, true);
-    react(api, NINJA_REACT, messageID);
-    return api.sendMessage("✅ HALIMAW: ON", threadID);
+    await react(api, NINJA_REACT, messageID);
+    return api.sendMessage("🥷🩸 HALIMAW: ON", threadID);
   }
 
   if (body === "..") {
     setEnabled(threadID, false);
-    react(api, NINJA_REACT, messageID);
     return api.sendMessage("⛔ HALIMAW: OFF", threadID);
   }
 
   if (body === "...") {
-    react(api, NINJA_REACT, messageID);
-    return api.sendMessage(
-      `📊 HALIMAW STATUS: ${isEnabled(threadID) ? "ON" : "OFF"}`,
-      threadID
-    );
+    const on = isEnabled(threadID);
+    if (on) await react(api, NINJA_REACT, messageID);
+    return api.sendMessage(`📊 HALIMAW STATUS: ${on ? "🥷🩸 ON" : "OFF"}`, threadID);
   }
 
-  // Ignore the bot's own messages (for reactions and roasts).
-  if (isSelf) return dbg("skip: sariling message ng bot account");
+  // ---- Auto-roast ----
+  if (isSelf) return dbg("skip: sariling message ng bot");
+  if (!isEnabled(threadID)) return dbg("skip: OFF sa thread", threadID);
 
-  if (!isEnabled(threadID)) return dbg("skip: OFF sa thread", threadID, "(i-send ang . para i-ON)");
-
-  // ---- Haha reaction ----
-  if (HAHA_REGEX.test(body)) react(api, HAHA_EMOJI, messageID);
-
-  // ---- Banat reply ----
-  if (!isTriggered(body.toLowerCase())) return dbg("skip: walang trigger word");
-  if (Math.random() > REPLY_CHANCE) return dbg("skip: natapat sa REPLY_CHANCE");
-
-  const state = getState(threadID);
   const now = Date.now();
-  if (now - state.lastReplyAt < REPLY_COOLDOWN_MS) return dbg("skip: cooldown");
-  state.lastReplyAt = now;
+  const last = threadLast.get(threadID) || 0;
+  if (now - last < randomBetween(COOLDOWN_MIN_MS, COOLDOWN_MAX_MS)) return dbg("skip: cooldown");
+  if (Math.random() > REPLY_CHANCE) return dbg("skip: chance");
 
-  const reply = applyShorthands(nextRoast(state));
-  await delay(replyDelay(reply));
+  threadLast.set(threadID, now);
 
-  // Kung na-OFF habang naghihintay, huwag nang ituloy.
-  if (!isEnabled(threadID)) return;
+  const roast = nextRoast(threadID);
 
-  dbg("sending reply:", reply);
-  api.sendMessage({ body: reply }, threadID, err => {
-    if (!err) return;
-    console.error("[HALIMAW] Send error:", err);
-    // Subukan ulit bilang plain text na walang reply-to.
-    api.sendMessage(reply, threadID, err2 => {
-      if (err2) console.error("[HALIMAW] Send retry error:", err2);
-    });
+  if (REACT_ON_EVERY_REPLY) react(api, NINJA_REACT, messageID);
+
+  const stopTyping = startTyping(api, threadID);
+  await delay(randomBetween(TYPING_MIN_MS, TYPING_MAX_MS));
+  if (stopTyping) {
+    try { stopTyping(); } catch (e) {}
+  }
+
+  if (!isEnabled(threadID)) return; // na-OFF habang nagta-type
+
+  dbg("sending:", roast);
+  api.sendMessage(roast, threadID, err => {
+    if (err) console.error("[HALIMAW] Send error:", err);
   });
 };
 
-// Walang prefix command; lahat ay nasa handleEvent.
+// Walang prefix command; dot lang ang gamit.
 module.exports.run = async function () {};
