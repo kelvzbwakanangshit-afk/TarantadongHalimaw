@@ -39,8 +39,15 @@ const TTL_MS = 20 * 60 * 1000;
 const MAX_BAGS = 200;
 const SHORTHAND_CHANCE = 0.35;
 
-// Palitan ng [] kung gusto mong sumagot sa lahat ng message.
-const TRIGGER_WORDS = ["halimaw", "banat", "roast", "tanga", "bobo", "sagot"];
+// Walang laman = sasagot sa lahat ng normal na message (ayon sa REPLY_CHANCE).
+// Lagyan ng salita, hal. ["halimaw", "banat"], kung gusto mong trigger words lang.
+const TRIGGER_WORDS = [];
+
+// I-set sa true para makita sa console kung bakit hindi sumasagot.
+const DEBUG = true;
+function dbg(...args) {
+  if (DEBUG) console.log("[HALIMAW]", ...args);
+}
 
 const SPEED_PRESETS = Object.freeze({
   fast:   { min: 350, max: 1100, typingPerChar: 7 },
@@ -561,16 +568,45 @@ function delay(ms) {
 
 const HAHA_REGEX = new RegExp("\\b" + escapeRegex(HAHA_REACT) + "+\\b", "i");
 
-function react(api, emoji, messageID) {
-  if (!messageID || typeof api.setMessageReaction !== "function") return;
-  api.setMessageReaction(
-    emoji,
-    messageID,
-    err => {
-      if (err) console.error("[HALIMAW] Reaction error:", err);
-    },
-    true
-  );
+const REACT_FALLBACK = "👍";
+
+function tryReact(api, emoji, messageID, force) {
+  return new Promise(resolve => {
+    // Kung walang callback na tinawag ang API, ituring na tapos pagkatapos ng 4s.
+    const timer = setTimeout(() => resolve(null), 4000);
+    try {
+      api.setMessageReaction(
+        emoji,
+        messageID,
+        err => {
+          clearTimeout(timer);
+          resolve(err || null);
+        },
+        force
+      );
+    } catch (e) {
+      clearTimeout(timer);
+      resolve(e);
+    }
+  });
+}
+
+async function react(api, emoji, messageID) {
+  if (!messageID) {
+    console.error("[HALIMAW] Walang messageID, hindi makakapag-react.");
+    return;
+  }
+  if (typeof api.setMessageReaction !== "function") {
+    console.error("[HALIMAW] Walang api.setMessageReaction sa FCA na gamit mo.");
+    return;
+  }
+
+  let err = await tryReact(api, emoji, messageID, true);
+  if (err) err = await tryReact(api, emoji, messageID, false);
+  if (err && emoji !== REACT_FALLBACK) {
+    err = await tryReact(api, REACT_FALLBACK, messageID, true);
+  }
+  if (err) console.error("[HALIMAW] Reaction error:", err);
 }
 
 function isTriggered(lowerBody) {
@@ -589,14 +625,10 @@ module.exports.handleEvent = async function ({ api, event }) {
 
   if (!body) return;
 
-  // Ignore the bot's own messages.
-  if (
+  const isSelf =
     event.senderID &&
     typeof api.getCurrentUserID === "function" &&
-    String(event.senderID) === String(api.getCurrentUserID())
-  ) {
-    return;
-  }
+    String(event.senderID) === String(api.getCurrentUserID());
 
   // ---- Controls: "." ON | ".." OFF | "..." STATUS ----
   if (body === ".") {
@@ -619,18 +651,21 @@ module.exports.handleEvent = async function ({ api, event }) {
     );
   }
 
-  if (!isEnabled(threadID)) return;
+  // Ignore the bot's own messages (for reactions and roasts).
+  if (isSelf) return dbg("skip: sariling message ng bot account");
+
+  if (!isEnabled(threadID)) return dbg("skip: OFF sa thread", threadID, "(i-send ang . para i-ON)");
 
   // ---- Haha reaction ----
   if (HAHA_REGEX.test(body)) react(api, HAHA_EMOJI, messageID);
 
   // ---- Banat reply ----
-  if (!isTriggered(body.toLowerCase())) return;
-  if (Math.random() > REPLY_CHANCE) return;
+  if (!isTriggered(body.toLowerCase())) return dbg("skip: walang trigger word");
+  if (Math.random() > REPLY_CHANCE) return dbg("skip: natapat sa REPLY_CHANCE");
 
   const state = getState(threadID);
   const now = Date.now();
-  if (now - state.lastReplyAt < REPLY_COOLDOWN_MS) return;
+  if (now - state.lastReplyAt < REPLY_COOLDOWN_MS) return dbg("skip: cooldown");
   state.lastReplyAt = now;
 
   const reply = applyShorthands(nextRoast(state));
@@ -639,14 +674,15 @@ module.exports.handleEvent = async function ({ api, event }) {
   // Kung na-OFF habang naghihintay, huwag nang ituloy.
   if (!isEnabled(threadID)) return;
 
-  api.sendMessage(
-    { body: reply },
-    threadID,
-    err => {
-      if (err) console.error("[HALIMAW] Send error:", err);
-    },
-    messageID
-  );
+  dbg("sending reply:", reply);
+  api.sendMessage({ body: reply }, threadID, err => {
+    if (!err) return;
+    console.error("[HALIMAW] Send error:", err);
+    // Subukan ulit bilang plain text na walang reply-to.
+    api.sendMessage(reply, threadID, err2 => {
+      if (err2) console.error("[HALIMAW] Send retry error:", err2);
+    });
+  });
 };
 
 // Walang prefix command; lahat ay nasa handleEvent.
